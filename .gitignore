@@ -1,0 +1,23 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# env
+.venv/
+
+# experiment outputs
+work_dirs/
+results/
+*.log
+# ... except the third-party watch record (route-a evidence)
+!doc/logs/*.log
+
+# data (large, re-downloadable; manifests and hashes are committed)
+data/
+
+# third_party: clones are reproducible from third_party/PINNED.md
+third_party/*
+!third_party/PINNED.md
+!third_party/README.md

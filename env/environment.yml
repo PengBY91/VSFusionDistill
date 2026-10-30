@@ -1,0 +1,27 @@
+# Training-machine environment (CUDA) — mirrors doc/topic-f2-codebase-
+# selection-and-setup-2026-10.md §4.1 pins.  The debug machine (no GPU)
+# uses env/install-debug-machine.sh with CPU wheels of the *same* versions;
+# both records live in env/ENVIRONMENT.md.
+name: aodet
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.1.2
+      - torchvision==0.16.2
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - --find-links https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html
+      - mmcv==2.1.0
+      - mmengine==0.10.7
+      - mmdet==3.3.0
+      - numpy==1.26.4
+      - pycocotools
+      - opencv-python-headless
+      - scipy
+      - pandas
+      - matplotlib
+      - terminaltables
+      - tqdm
+      - pytest
