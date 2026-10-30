@@ -27,7 +27,10 @@ for seed in "${SEEDS[@]}"; do
   echo "=== [$name seed $seed] train ==="
   python "$REPO/tools/train.py" "$CONFIG" --work-dir "$work" --seed "$seed"
   echo "=== [$name seed $seed] scan D0-Dinf ==="
-  python "$REPO/tools/test.py" "$CONFIG" "$work/latest.pth" \
+  # mmengine writes epoch_N.pth + last_checkpoint (no latest.pth symlink)
+  ckpt=$(cat "$work/last_checkpoint")
+  [[ -f "$ckpt" ]] || ckpt="$work/$ckpt"
+  python "$REPO/tools/test.py" "$CONFIG" "$ckpt" \
     --out-dir "$work" --levels $LEVELS
 done
 

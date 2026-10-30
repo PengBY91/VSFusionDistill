@@ -6,6 +6,7 @@ __pycache__/
 
 # env
 .venv/
+.venv-gpu/
 
 # experiment outputs
 work_dirs/
@@ -21,3 +22,6 @@ data/
 third_party/*
 !third_party/PINNED.md
 !third_party/README.md
+
+# scratch eval/projection outputs (reproducible from tools/)
+work/

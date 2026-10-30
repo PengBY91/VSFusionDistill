@@ -26,12 +26,13 @@ optim_wrapper = dict(
 )
 
 param_scheduler = [
+    # warmup is already iter-based (by_epoch=False) -- no convert flag
+    # (mmengine asserts convert_to_iter_based only on epoch-based entries)
     dict(type="LinearLR",
          start_factor=1e-4,
          by_epoch=False,
          begin=0,
-         end=500,
-         convert_to_iter_based=True),
+         end=500),
     dict(type="CosineAnnealingLR",
          eta_min=5e-4,
          by_epoch=True,

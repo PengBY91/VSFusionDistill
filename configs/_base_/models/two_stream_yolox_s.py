@@ -4,12 +4,12 @@ Both streams are YOLOX-S-width (widen 0.5 -> neck out 128).  The base
 configures the *fused* topology (cross-attention, all three heads);
 B0-style configs null out the camera stream / heads by overriding keys.
 
-``num_classes``: set to the converted dataset's category count (UXO
-categories are fixed by aodet.datasets.converters.uxo_to_paired once the
-sample archive is verified — TODO 14.2; 1 = single UXO class).
+``num_classes``: the UXO category count verified on sample.7z and fixed
+by aodet.datasets.converters.uxo_to_paired.CATEGORIES (3 classes:
+100lbs_aircraft_bomb, incindiary_grenade, mortar_shell).
 """
 
-num_classes = 1
+num_classes = 3
 
 # YOLOX-S building blocks (mmdet 3.3 yolox_s geometry)
 _backbone = dict(
@@ -33,11 +33,15 @@ _head = dict(
 
 model = dict(
     type="TwoStreamYOLOX",
+    # YOLOX convention: raw 0-255 BGR inputs, no mean/std normalization
+    # (mean/std None disables normalize in DetDataPreprocessor).  Verified
+    # the hard way on the W1 COCO reproduction — ImageNet-style normalize
+    # collapses the YOLOX objectness branch and AP to ~0; it also breaks
+    # any future init of the camera stream from COCO-pretrained YOLOX-S.
+    # Paired streams are resized to exact 640x640 upstream, so
+    # pad_size_divisor never actually pads.
     data_preprocessor=dict(
         type="PairedDataPreprocessor",
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True,
         pad_size_divisor=32,
     ),
     sonar_backbone=_backbone,

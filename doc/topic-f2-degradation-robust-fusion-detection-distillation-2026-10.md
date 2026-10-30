@@ -436,25 +436,25 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 
 - [ ] **S0 数据路线**：从三条路里选。a 是联系作者；b 是在 UXO 上自建；c 是等 H1。方案页建议 a 和 b 并行（方案页第 6 节）。
 - [ ] **F1 W2 框架是否也定为 mmdetection**：如果定了，F1 和 F2 共用 `ao-det` 仓库、划分脚本、M₀ 和评测（方案页 4.4 第 8 条）。
-- [ ] **训练机器**：需要 24 GB 级显卡，并且能放下 UXO 全量 96 GB（解压后更大）。本机 RTX 4070 Laptop 只有 8 GB，只能调试。这项与 F1 W1 的"确认可用 GPU"合并处理。
+- [ ] **训练机器**：需要 24 GB 级显卡，并且能放下 UXO 全量 96 GB（解压后更大）。（硬件阻塞已解除：2026-10-31 发现本机已挂 **RTX 5090 D v2 24 GB**，磁盘 944 GB 可用；`.venv-gpu` 环境已建并验证——pinned cu121 栈在 Blackwell sm_120 上实测不可用（无内核映像），改用 torch 2.7.1+cu128 + mmcv 2.1.0 CPU-only 源码构建 + 推理期 NMS CPU 回退，全套测试通过，S0-lite 可在本机跑，见 `env/ENVIRONMENT.md`；是否用本机承担全量训练仍与 F1 W1 合并待团队确认）
 - [ ] **库内"已开源"表述是否更正**：涉及三处，见 14.4。
 
 ### 14.2 数据
 
 - [ ] 路线 a：由团队向 RSFusionDet 作者发邮件，索取代码和 RSFusion 数据，并说明用途和引用方式。邮件由团队成员发送。
 - [ ] 每两周检查一次 `LEFTeyex/RSFusionDet`。看到提交时，记录 commit、框架版本和数据下载方式。（机制已建立：`tools/check_rsfusiondet.sh` + `doc/logs/rsfusiondet-watch.log`；2026-10-29/30 两次核验均为空仓库）
-- [ ] 路线 b：下载 UXO `sample.7z`（1.7 GB）。用官方 `dfki-ric/uxo-dataset2024` 的脚本读取，核验三件事：标签坐标"乘 3"的规则；issue 报告的框与原始 GoPro 帧对不上的问题；外参。（下载进行中：2026-10-30 首次传输在 681 MB 被对端截断，已断点续传，完成后按 md5 `fcadef5f...` 校验）
+- [x] 路线 b：下载 UXO `sample.7z`（1.7 GB）。用官方 `dfki-ric/uxo-dataset2024` 的脚本读取，核验三件事：标签坐标"乘 3"的规则；issue 报告的框与原始 GoPro 帧对不上的问题；外参。（2026-10-30 完成：md5 精确匹配；①×3 规则定量+目检成立（labels 在 640×360 空间、随包 jpg 为 1920×1080，×3 框在 2 个 recording 样帧上套住目标）；②"对不上"成因=把 ×3 框套到 5.3K 原始帧（缩放比 2.77≠3），随包 jpg 上不复现，转换器以随包 jpg 为准；③外参齐备（transforms.yaml TF 树+4 份 GoPro 内参+逐帧 gantry/ARIS 元数据）。类别 3 种 2616 标注帧。详见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [ ] 根据 sample 的核验结果，决定是否下载全量，以及下载哪几个包（`data_export_polar` 16.5 GB、`data_processed` 61.5 GB 等）。
-- [ ] UXO 声呐框投影：用官方位姿和标定投影，同时生成跨模态对应 π；抽样做人工目检，记录投影误差。
+- [x] UXO 声呐框投影：用官方位姿和标定投影，同时生成跨模态对应 π；抽样做人工目检，记录投影误差。（2026-10-31 完成：`aodet/datasets/converters/uxo_projection.py` 逐 recording 三阶段稳健标定（相机方位→[R_son,b_rng]→10 参联合 Huber）+ `tools/project_uxo_sonar.py`；合成水槽 9 测试覆盖极坐标/瞄准×弧线/直线四几何，P↔b 退化用先验+|b|≤0.8 m 硬界处理。实数据 2573 帧全部落框：blob 门控 1185 / 几何投影 1388 / 丢弃 0，pairs.csv π 就绪。误差如实记录：直线录音最好（dcol p50 0.75–1.23 beams）；弧线录音存在 ~2° rms 的未建模时变瞄准残差（行程端部达 10–30 beams）；100927 的 b 顶在 −0.8 界上、P_z 偏深（该录音退化活跃）。已知局限与非作者人工目检待办见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]投影一节。）
 - [ ] UMOD：只做 objectness 小样本 sanity check，不再列为外部测试集；以后补全了再评估。
 - [ ] 与 H1 约定数据使用方式（第 10 节"评审"一项；G1 的前提）。
 
 ### 14.3 代码库搭建（方案页第 7 节，路线 b 成立时执行）
 
 - [x] W1：建立独立 conda 环境，Python 3.10、torch 2.1.2+cu121、mmcv 2.1.0、mmengine 0.10.7、mmdet 3.3.0、numpy 1.26；保存 `pip freeze`、`pip check` 和 CUDA 信息。（2026-10-30，调试机以 venv+CPU wheel 完成，cu121 环境文件就绪待训练机；[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
-- [ ] W1：mmdet YOLOX-S 在 COCO val 子集上复现官方精度，差距在 1 AP 以内，以此确认安装正确。（待 val2017 子集下载，与 UXO 下载排队）
+- [x] W1：mmdet YOLOX-S 在 COCO val 子集上复现官方精度，差距在 1 AP 以内，以此确认安装正确。（2026-10-30，val2017 全集 5000 张 **AP 40.30** vs 官方 40.5，差 0.2，通过；过程中发现并修复 YOLOX 0–255 BGR 预处理坑——ImageNet 归一化会把 AP 打到 0.004；另证实按 id 排序子集偏易（first-1000 AP 42.2），gate 必须用随机采样；[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [x] W1：建 `ao-det` 仓库骨架；`third_party/` 下固定 commit 引入 KD-YOLOX-ViT、Megvii YOLOX、uxo-dataset2024、ProbEn、CRKD，只读，不 import。（2026-10-30，另含 SCFusion 共 6 仓库；SHA 见 `third_party/PINNED.md`）
-- [ ] W2：写配对格式（`camera.json`、`sonar.json`、`pairs.csv`、逐帧元数据）和 UXO 转换器。（格式+读写+校验完成并有往返测试；UXO 转换器待 sample.7z 核验后编写，2026-10-30）
+- [x] W2：写配对格式（`camera.json`、`sonar.json`、`pairs.csv`、逐帧元数据）和 UXO 转换器。（2026-10-30 完成：转换器含路径白名单/×3 框/recording 级 split/frame_meta 投影字段，8 项新测试；实数据转换 2573 对，跳过原因逐项计数且与清点吻合（43 孤儿 label）；16 格拼图目检 15/16 套住、1 格为源标注部分框噪声（`105856/0282`，非转换器 bug）；sonar 标注与 pairs 留待投影工具；[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [ ] W2：写相机退化算子，包括 D0–D4、D∞ 和只有色偏一档，按 (sample_id, level, seed) 确定性生成；离线生成退化测试集，记录哈希；样张交给非作者成员目检。（算子与离线集工具+哈希 manifest+确定性测试均完成；"非作者成员目检"待人工执行，2026-10-30）
 - [x] W2：方案页 4.5 的测试全部通过。测试包括退化单调性与确定性、几何一致性、转换器往返、相关性指标、逐支路 AP 对拍；失败时返回非零退出码。（2026-10-30，55 项测试全绿；[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [x] W2：确定声呐输入用极坐标矩形图还是扇形图。要结合团队声呐只能输出图像的判定，并考虑 L_xp 实现时的便利。（2026-10-30，定为极坐标矩形图、x=方位角升序、0° 居中；依据与对 L_xp 的影响见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）

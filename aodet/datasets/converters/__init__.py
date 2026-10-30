@@ -7,5 +7,6 @@ upstream releases (see the codebase selection doc).
 
 from .rsfusion_to_paired import convert as convert_rsfusion
 from .umod_to_paired import convert as convert_umod
+from .uxo_to_paired import convert as convert_uxo
 
-__all__ = ["convert_rsfusion", "convert_umod"]
+__all__ = ["convert_rsfusion", "convert_umod", "convert_uxo"]
