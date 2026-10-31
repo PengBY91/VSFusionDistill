@@ -389,8 +389,8 @@ blob-only**（`sonar_gt_sources=("blob",)`；无回波帧保留在 batch
 |---|---|---|---|---|---|
 | B0 | d0 | 0.005 | 0.002 | — | d1–d∞ 与 d0 逐位相同 |
 | **B0 train 自评** | d0 | **0.560** | 0.235 | — | 同一检查点，blob 口径 AP50=**0.904** |
-| cross-attn（fused=uncoupled 逐位同） | d0 | 0.001 | 0.000 | 0.047 | d1–d4 同 d0；d∞ sonar 0.000 / camera 0.000 |
-| **cross-attn train 自评** | d0 | **0.604** | 0.257 | **0.980** | blob 口径 AP50=**0.922**；camera AP50=1.000 |
+| cross-attn（fused / uncoupled，别名 bug 修复后重导） | d0 | 0.001 / 0.003 | 0.000 / 0.001 | 0.047 | d1–d4 同 d0；d∞ sonar≈0 / camera 0.000 |
+| **cross-attn train 自评**（fused / uncoupled） | d0 | **0.604 / 0.632** | 0.257 / 0.267 | **0.980** | blob 口径 AP50=**0.922 / 0.926**；camera AP50=1.000 |
 
 相关性表（`correlation.csv`，cross-attn）：test×blob 口径 n=495，
 φ≈−0.06…−0.07、ΔP_miss≈−0.00…−0.01、Spearman≈−0.09（d0–d4），
@@ -400,6 +400,12 @@ D∞ 行退化（相机恒 miss → φ=nan）。检出处于地板时相关性�
 （有 GT 无预测）全被记 miss，n_pairs 虚高到 2573、φ 被稀释；现默认
 `--split test` + `--gt-sources blob`（E06 主口径），`--split all
 --gt-sources blob projected` 恢复全量语义，新增回归测试 2 项。
+**工具修正 2**（同日第二处）：多头 predict 的共享样本别名 bug
+（见解读 5 勘误）——`_branch_predict` 已改为每分支写全新
+DetDataSample，反别名回归测试入 `tests/test_two_stream_model.py`；
+bug 期工件存 `work_dirs/s0_cross_attn_yoloxs_seed0/alias_bug_archive/`
+（两份 pred 文件均为 fused 输出，uncoupled 列无效），修复后重导
+为现行文件。
 
 **test @ d0 按录音分解**（预登记标准 2 的判定数据，blob 口径）：
 
@@ -447,11 +453,20 @@ D∞ 行退化（相机恒 miss → φ=nan）。检出处于地板时相关性�
 5. **cross-attn 侧补充**（test 与 train 同现象）：相机支路 train
    自评 AP50=1.000 / test 0.154——**相机同样吃录音级域移位**；
    test 相机 AP 随退化档缓升（0.047→0.061，d0→d4）是小数字下的
-   观察值，不作结论。**fused 与 uncoupled 声呐头输出逐位相同**
-   （train/test 全部口径三个小数位相等）——当前训练里交叉注意力
-   融合对声呐输出零影响（近恒等映射或梯度未流经融合模块），
-   RQ-0 的「互毒害/互增强」在这个状态下无从谈起；E08 后需专项
-   核查融合模块是否真的被训练（梯度/权重范数），已记入 E08 关注项。
+   观察值，不作结论。~~fused 与 uncoupled 声呐头输出逐位相同~~
+   **勘误（工具 bug）**：逐位同是评测侧别名 bug——mmdet
+   `add_pred_to_datasample` 原地改写共享 DetDataSample，两个声呐
+   分支共享同批 sonar 样本，后算的 fused 覆盖先算的 uncoupled，
+   两份 pred 文件其实都是 fused 的输出。证据：checkpoint 里两头
+   78/90 张量权重显著不同（max|Δ| 0.12–0.2）而文件逐位同，矛盾
+   → 定位机制；修复后重导，uncoupled 头首次被真实测量（test
+   blob AP50 **0.013** vs fused 0.005，751 条预测 top 0.830——
+   与 B0 0.021 同地板）；梯度核查 30/30 fusion 参数有非零梯度
+   （sonar_proj 梯度 L2 达 1.77）——**融合模块在训练图里**，
+   「近恒等映射」推断作废。B0 单头、camera 分支（独立样本对象）
+   不受影响；预测解剖证据来自 B0，不受影响。RQ-0 互毒害判定
+   仍无效（地板上无信息量）。**教训：多头评测 dump 前必须验证
+   分支真实分离（权重不同 ⇒ 输出必不同，否则是管线 bug）。**
 
 **结论**。标准 2 触发并完成回排查：E05 终判的「弧→线几何域移位」
 修正为「**录音级域移位**，几何类非组织轴」；机制 = 定位可迁移 +
@@ -459,8 +474,10 @@ D∞ 行退化（相机恒 miss → φ=nan）。检出处于地板时相关性�
 **E08 = 训练期声呐尺度抖动**（手段已按 m/row 勘误从物理归一化
 修正），训练中。cross-attn 侧已出数：声呐双头与 B0 同地板
 （融合无关此问题）、相机支路同样吃录音域移位（train 1.000 /
-test 0.154）、**fused≡uncoupled 逐位同**（融合模块体检进 E08
-标准 5）。E07 关闭为「❌ 判定标准 2 触发（保留为反例）」，工件
+test 0.154）。**勘误：初报的「fused≡uncoupled 逐位同」是评测侧
+共享样本别名 bug**（修复后重导 + 梯度核查确认融合在训练，详见
+解读 5 与 E08 标准 5）。E07 关闭为「❌ 判定标准 2 触发（保留为
+反例）」，工件
 链齐（ap_summary 双 run × 双口径、correlation.csv 修正版、
 results.csv 42 行）。LOO-CV 与全量 UXO 协议留作 E08 后选项。
 
@@ -496,10 +513,16 @@ results.csv 42 行）。LOO-CV 与全量 UXO 协议留作 E08 后选项。
 2. 124735 AP50 不低于 E07 值 −0.02（抖动不得伤害域内尺度迁移）。
 3. train 自评 AP50 ≥ 0.80（容许对 train 域轻微欠拟合）。
 4. 其余沿用 E07 标准 3–7（RQ-0 缩影、相机支路、相关性表、W3 出口）。
-5. **融合模块体检（E07 遗留）**：cross-attn 的 fused 与 uncoupled
-   声呐头在 E07 中输出逐位相同——检查融合分支梯度/权重范数确认
-   它是否真的被训练；若为恒等，RQ-0 结论无效，须先修融合再谈
-   互毒害。
+5. **融合模块体检（E07 遗留，已提前完成）**：E07 的「fused 与
+   uncoupled 输出逐位相同」是**评测工件 bug 而非模型性质**——
+   mmdet `add_pred_to_datasample` 原地改写共享 DetDataSample，两个
+   声呐分支共享同批 sonar 样本，后算的 fused 覆盖先算的 uncoupled
+   （两份 pred 文件其实都是 fused 的输出）。已修
+   （`_branch_predict` 每分支写全新样本 + 反别名回归测试）并用
+   E07 检查点重导：梯度核查 **30/30 fusion 参数有非零梯度**
+   （sonar_proj L2 达 1.77）——融合模块确实在训练图里，uncoupled
+   头首次被真实测量（test blob AP50 0.013 vs fused 0.005，同地板）。
+   RQ-0 互毒害判定仍无效（地板上无信息量），待检出模型再谈。
 
 ## 3.x 代码审查注记（2026-10-31）
 

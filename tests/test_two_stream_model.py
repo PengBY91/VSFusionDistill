@@ -152,6 +152,40 @@ def test_fused_model_predict_branches():
             assert hasattr(pi, attr)
 
 
+def test_predict_sonar_branches_do_not_alias():
+    """E07 regression: mmdet's add_pred_to_datasample mutates samples in
+    place; the fused and uncoupled sonar heads share one sample list, so
+    the second branch used to overwrite the first and both prediction
+    files ended up bit-identical.  Each branch must own fresh samples and
+    genuinely different predictions when the heads differ."""
+    model = _model(fusion=dict(type="ConcatFusion", cam_channels=[64, 64, 64],
+                               sonar_channels=[64, 64, 64], out_channels=64))
+    with torch.no_grad():      # make the two heads provably different
+        for p in model.uncoupled_sonar_head.parameters():
+            p.add_(0.05)
+    model.eval()
+    data = _batch(b=2)
+    inputs, samples = _prep(model, data, training=False)
+    with torch.no_grad():
+        out = model.predict(inputs, samples)
+    a, b = out["sonar"], out["sonar_uncoupled"]
+    assert a[0] is not b[0] and a[1] is not b[1]    # no shared objects
+    assert all(x is not y for x, y in zip(a, b))
+    # the original input samples stay untouched (no in-place writes)
+    orig = samples["sonar"]
+    assert all(not hasattr(ds, "pred_instances") for ds in orig)
+    # different heads -> at least one frame's detections differ (unequal
+    # counts count: random-init heads keep different numbers above thr)
+    differs = any(
+        len(sa.pred_instances) != len(sb.pred_instances)
+        or not torch.allclose(sa.pred_instances.scores,
+                              sb.pred_instances.scores)
+        or not torch.allclose(sa.pred_instances.bboxes,
+                              sb.pred_instances.bboxes)
+        for sa, sb in zip(a, b))
+    assert differs
+
+
 def test_predict_camera_branch_at_dinf_drop():
     """D∞ drop: camera input None -> camera branch emits empty predictions."""
     model = _model(fusion=dict(type="NoneFusion"))

@@ -299,9 +299,16 @@ class TwoStreamYOLOX(BaseDetector):
 
     def _branch_predict(self, head, feats, samples, rescale) -> SampleList:
         # BaseDenseHead.predict returns list[InstanceData]; wrapping onto
-        # the data samples keeps metainfo (sample_id, coco_image_id)
+        # the data samples keeps metainfo (sample_id, coco_image_id).
+        # mmdet's add_pred_to_datasample MUTATES the samples in place and
+        # returns them; both sonar heads share one sample list, so writing
+        # into the originals would alias the branches (E07: the fused
+        # results overwrote the uncoupled ones in the dump, making the two
+        # prediction files bit-identical).  Wrap onto fresh samples so each
+        # branch owns its output.
         results = head.predict(feats, samples, rescale=rescale)
-        return self.add_pred_to_datasample(samples, results)
+        fresh = [DetDataSample(metainfo=ds.metainfo) for ds in samples]
+        return self.add_pred_to_datasample(fresh, results)
 
     @staticmethod
     def _empty_predictions(samples: Optional[SampleList]) -> SampleList:
