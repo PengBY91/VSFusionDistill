@@ -173,3 +173,43 @@ def test_sonar_gt_sources_filter(tmp_path):
     ds_all = PairedSonarCameraDataset(
         data_root=root, split="train", pipeline=[])
     assert all(len(d["boxes_sonar"]) == 1 for d in ds_all.load_data_list())
+
+
+def test_sonar_scale_jitter_rows_and_boxes():
+    """E08: jitter rescales the sonar range axis and box y/h only;
+    camera stream and azimuth (x/w) stay fixed."""
+    from aodet.datasets.transforms import AOSonarScaleJitter
+    img_sonar = np.zeros((100, 50, 3), np.uint8)
+    img_sonar[40:52, 20:30] = 255
+    img_camera = np.zeros((30, 40, 3), np.uint8)
+    t = AOSonarScaleJitter(scale_range=(1.5, 1.5))
+    out = t.transform(dict(img_sonar=img_sonar.copy(),
+                           img_camera=img_camera.copy(),
+                           boxes_sonar=[[20.0, 40.0, 10.0, 12.0]],
+                           boxes_camera=[[1.0, 2.0, 3.0, 4.0]]))
+    assert out["img_sonar"].shape[0] == 150      # 100 * 1.5 rows
+    assert out["img_sonar"].shape[1] == 50       # azimuth untouched
+    assert out["img_camera"].shape == (30, 40, 3)
+    assert out["boxes_sonar"] == [[20.0, 60.0, 10.0, 18.0]]  # y/h only
+    assert out["boxes_camera"] == [[1.0, 2.0, 3.0, 4.0]]
+    assert out["sonar_scale_jitter"] == 1.5
+
+
+def test_sonar_scale_jitter_identity_paths():
+    from aodet.datasets.transforms import AOSonarScaleJitter
+    img = np.zeros((100, 50, 3), np.uint8)
+    for kwargs in (dict(scale_range=(1, 1)), dict(prob=0.0)):
+        t = AOSonarScaleJitter(**kwargs)
+        out = t.transform(dict(img_sonar=img.copy(),
+                               boxes_sonar=[[1.0, 2.0, 3.0, 4.0]]))
+        assert out["img_sonar"].shape == (100, 50, 3)
+        assert out["boxes_sonar"] == [[1.0, 2.0, 3.0, 4.0]]
+        assert out["sonar_scale_jitter"] == 1.0
+    out = AOSonarScaleJitter().transform(dict(img_sonar=None))
+    assert out["sonar_scale_jitter"] == 1.0
+
+
+def test_sonar_scale_jitter_rejects_bad_range():
+    from aodet.datasets.transforms import AOSonarScaleJitter
+    with pytest.raises(ValueError):
+        AOSonarScaleJitter(scale_range=(1.8, 0.6))

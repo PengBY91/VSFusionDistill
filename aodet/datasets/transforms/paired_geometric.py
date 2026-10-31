@@ -27,6 +27,7 @@ __all__ = [
     "AOLoadPaired",
     "AOPairedResize",
     "AOPairedSyncFlip",
+    "AOSonarScaleJitter",
 ]
 
 
@@ -130,4 +131,54 @@ class AOPairedSyncFlip(BaseTransform):
                 for b in (results.get(boxes_key) or [])
             ]
         results["flip_applied"] = True
+        return results
+
+
+@TRANSFORMS.register_module()
+class AOSonarScaleJitter(BaseTransform):
+    """Randomly rescale the sonar range axis (rows) only — train-side.
+
+    E07/E08 motivation: apparent echo height drifts across recordings
+    (100927 echoes are 12-17 px against a 22-39 px train support), and
+    the box regression locks onto the train scale prior — localisation
+    transfers, scale does not.  Jittering the row axis during training
+    broadens that prior.  The azimuth (column) axis, the camera stream
+    and every camera/sonar GT other than the sonar box y/h stay fixed:
+    cross-modal geometric consumers (M0 bearing windows) live in column
+    space, which this transform does not touch.  ``ori_shape_sonar``
+    deliberately keeps the on-disk file shape (same convention as
+    ``AOPairedResize``); the jitter is train-only and never runs in the
+    test pipeline where ori_shape drives prediction back-mapping.
+
+    Args:
+        scale_range: closed-ish range of the row rescale factor f,
+            drawn uniformly; (1, 1) disables the jitter.
+        prob: probability of applying the jitter at all.
+    """
+
+    def __init__(self, scale_range: tuple = (0.6, 1.8), prob: float = 1.0):
+        super().__init__()
+        if not 0 < scale_range[0] <= scale_range[1]:
+            raise ValueError(f"invalid scale_range {scale_range}")
+        self.scale_range = scale_range
+        self.prob = prob
+
+    def transform(self, results: dict) -> dict:
+        img = results.get("img_sonar")
+        if img is None or self.prob <= 0 or self.scale_range == (1, 1):
+            results["sonar_scale_jitter"] = 1.0
+            return results
+        if np.random.rand() > self.prob:
+            results["sonar_scale_jitter"] = 1.0
+            return results
+        f = np.random.uniform(*self.scale_range)
+        h, w = img.shape[:2]
+        new_h = max(1, int(round(h * f)))
+        results["img_sonar"] = cv2.resize(
+            img, (w, new_h), interpolation=cv2.INTER_LINEAR)
+        results["boxes_sonar"] = [
+            [b[0], b[1] * f, b[2], b[3] * f]
+            for b in (results.get("boxes_sonar") or [])
+        ]
+        results["sonar_scale_jitter"] = f
         return results
