@@ -94,6 +94,17 @@ _B_RNG_MAX = 0.8    # hard bound on b_rng: |echo offset| <= half the
                     # range profile when the target sits near the arc
                     # centre, the real tank layout -- lets the joint fit
                     # run away (observed: b = -16 m on 100927)
+_P_BELOW_HEAD_M = 0.05  # the target lies at least this far below the
+                        # sonar centres.  Physical prior: it rests on the
+                        # tank floor and the head looks down at it.  On a
+                        # straight traverse with an operator-aimed head
+                        # the reflection of P across the horizontal plane
+                        # through the sensors leaves every range unchanged
+                        # and the per-frame aim absorbs the bearings, so
+                        # the two minima differ by ~1% in cost and the
+                        # basin picked flips with floating-point details
+                        # (synthetic aim-line: P_z +0.04 vs truth -1.20)
+_CAND_MIN_SEP_M = 0.15  # stage-1 solutions closer than this are one basin
 _GATE_COL = 8.0     # blob-vs-projection consistency gate (beams)
 _GATE_RNG = 0.20    # blob-vs-projection consistency gate (m)
 # cap on the *projected* (non-blob) box extent in px, (w, h): the
@@ -396,65 +407,112 @@ def _staged_fit(cam: List[FrameObs], son: List[FrameObs],
             "z", roll, degrees=True).as_matrix(), p_hyp)
             for p_hyp in p_hyps for roll in (0, 180)]
         starts.append((_R_INIT, p_hyps[0]))
-    best = None
+    # which position hypothesis each start came from (aim mode only)
+    hyp_of = ([i // 2 for i in range(2 * len(p_hyps))] + [0]
+              if yaw_sign == _YAW_AIM else [0] * len(starts))
+    # target below the head (see _P_BELOW_HEAD_M): an upper bound on P_z
+    # in every stage that moves P; seeds are clipped into the feasible set
+    z_ceil = float(c_son[:, 2].min()) - _P_BELOW_HEAD_M
+    lo1 = np.full(6, -np.inf)
+    hi1 = np.r_[np.full(5, np.inf), z_ceil]
+
+    def _feasible(P):
+        P = np.array(P, dtype=float)
+        P[2] = min(P[2], z_ceil - 1e-3)
+        return P
+
+    def _refine(best):
+        """Stages 2-3 from one stage-1 solution."""
+        Rcam0 = Rotation.from_rotvec(best.x[:3]).as_matrix()
+        P0 = best.x[3:6]
+        Rz_son = rz_son(P0)
+
+        def son_resid(q):
+            Rson = Rotation.from_rotvec(q[:3]).as_matrix()
+            v = P0 - c_son
+            vs = np.einsum("nij,nj->ni", Rz_son, v) @ Rson
+            dth = np.arctan2(vs[:, 1], vs[:, 0]) - TH
+            r_res = np.linalg.norm(v, axis=1) + q[3] - RG
+            return np.r_[np.arctan2(np.sin(dth), np.cos(dth)) / _SIG_ANG,
+                         r_res / _SIG_RNG]
+
+        q0 = np.r_[Rotation.from_matrix(
+            Rcam0 @ np.diag([1.0, -1.0, -1.0])).as_rotvec(), 0.0]
+        r2 = least_squares(son_resid, q0, loss="huber", f_scale=2.0,
+                           x_scale=np.array([1.0, 1.0, 1.0, 0.05]),
+                           bounds=(np.r_[np.full(3, -np.inf), -_B_RNG_MAX],
+                                   np.r_[np.full(3, np.inf), _B_RNG_MAX]),
+                           max_nfev=5000)
+
+        # stage 3: full joint residual, seeded from stages 1-2
+        def joint_resid(p):
+            Rcam = Rotation.from_rotvec(p[0:3]).as_matrix()
+            Rson = Rotation.from_rotvec(p[7:10]).as_matrix()
+            P, br = p[3:6], p[6]
+            d = np.einsum("nij,nj->ni", rz_cam(P), P - c_cam)
+            d /= np.linalg.norm(d, axis=1, keepdims=True)
+            cosang = np.clip(np.einsum("ni,ni->n", A, d @ Rcam), -1, 1)
+            v = P - c_son
+            vs = np.einsum("nij,nj->ni", rz_son(P), v) @ Rson
+            dth = np.arctan2(vs[:, 1], vs[:, 0]) - TH
+            r_res = np.linalg.norm(v, axis=1) + br - RG
+            # weak prior on b_rng: it models a bounded physical effect
+            # (front-face echo vs box centre, ~0.1 m).  Without it a
+            # straight approach pass is exactly degenerate -- shifting P
+            # along the path moves every range uniformly, which b absorbs
+            return np.r_[np.arccos(cosang) / _SIG_ANG,
+                         np.arctan2(np.sin(dth), np.cos(dth)) / _SIG_ANG,
+                         r_res / _SIG_RNG,
+                         br / _SIG_B_PRIOR]
+
+        p0 = np.r_[best.x[:6], r2.x[3], r2.x[:3]]
+        # x_scale/max_nfev: with the default budget (100*nfev) the numeric
+        # jacobian runs out of evaluations before converging on the
+        # mildly ill-conditioned b_rng <-> P-radial direction
+        bnds = (np.r_[np.full(6, -np.inf), -_B_RNG_MAX, np.full(3, -np.inf)],
+                np.r_[np.full(5, np.inf), z_ceil, _B_RNG_MAX,
+                      np.full(3, np.inf)])
+        return least_squares(joint_resid, p0, loss="huber", f_scale=2.0,
+                             x_scale=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+                                               0.05, 1.0, 1.0, 1.0]),
+                             bounds=bnds, max_nfev=10000)
+
+    stage1 = []
     for R0, P0 in starts:
         r = least_squares(cam_resid,
-                          np.r_[Rotation.from_matrix(R0).as_rotvec(), P0],
-                          loss="huber", f_scale=2.0)
-        if best is None or r.cost < best.cost:
-            best = r
-    Rcam0 = Rotation.from_rotvec(best.x[:3]).as_matrix()
-    P0 = best.x[3:6]
-    Rz_son = rz_son(P0)
+                          np.r_[Rotation.from_matrix(R0).as_rotvec(),
+                                _feasible(P0)],
+                          loss="huber", f_scale=2.0, bounds=(lo1, hi1))
+        stage1.append(r)
+    # Stage-1 candidates that go on to stages 2-3.  With a fixed head
+    # convention the camera cost separates the basins and the best one
+    # suffices.  With the aimed head it barely does: the head is
+    # re-aimed at P every frame, so the camera residual is nearly flat in
+    # P and its argmin is a coin flip between basins (synthetic aim-line
+    # picked a basin ~1 m off; ranking by camera cost and keeping the top
+    # few still missed the true basin on other noise draws).  There, the
+    # best stage-1 solution of EVERY position hypothesis is refined
+    # (near-duplicates merged) and the joint cost -- whose range term
+    # does separate the basins -- decides.
+    if yaw_sign == _YAW_AIM:
+        per_hyp = {}
+        for h, r in zip(hyp_of, stage1):
+            if h not in per_hyp or r.cost < per_hyp[h].cost:
+                per_hyp[h] = r
+        cands = []
+        for r in sorted(per_hyp.values(), key=lambda r: r.cost):
+            if all(np.linalg.norm(r.x[3:6] - c.x[3:6]) > _CAND_MIN_SEP_M
+                   for c in cands):
+                cands.append(r)
+    else:
+        cands = [min(stage1, key=lambda r: r.cost)]
 
-    def son_resid(q):
-        Rson = Rotation.from_rotvec(q[:3]).as_matrix()
-        v = P0 - c_son
-        vs = np.einsum("nij,nj->ni", Rz_son, v) @ Rson
-        dth = np.arctan2(vs[:, 1], vs[:, 0]) - TH
-        r_res = np.linalg.norm(v, axis=1) + q[3] - RG
-        return np.r_[np.arctan2(np.sin(dth), np.cos(dth)) / _SIG_ANG,
-                     r_res / _SIG_RNG]
-
-    q0 = np.r_[Rotation.from_matrix(
-        Rcam0 @ np.diag([1.0, -1.0, -1.0])).as_rotvec(), 0.0]
-    r2 = least_squares(son_resid, q0, loss="huber", f_scale=2.0,
-                       x_scale=np.array([1.0, 1.0, 1.0, 0.05]),
-                       bounds=(np.r_[np.full(3, -np.inf), -_B_RNG_MAX],
-                               np.r_[np.full(3, np.inf), _B_RNG_MAX]),
-                       max_nfev=5000)
-
-    # stage 3: full joint residual, seeded from stages 1-2
-    def joint_resid(p):
-        Rcam = Rotation.from_rotvec(p[0:3]).as_matrix()
-        Rson = Rotation.from_rotvec(p[7:10]).as_matrix()
-        P, br = p[3:6], p[6]
-        d = np.einsum("nij,nj->ni", rz_cam(P), P - c_cam)
-        d /= np.linalg.norm(d, axis=1, keepdims=True)
-        cosang = np.clip(np.einsum("ni,ni->n", A, d @ Rcam), -1, 1)
-        v = P - c_son
-        vs = np.einsum("nij,nj->ni", rz_son(P), v) @ Rson
-        dth = np.arctan2(vs[:, 1], vs[:, 0]) - TH
-        r_res = np.linalg.norm(v, axis=1) + br - RG
-        # weak prior on b_rng: it models a bounded physical effect
-        # (front-face echo vs box centre, ~0.1 m).  Without it a
-        # straight approach pass is exactly degenerate -- shifting P
-        # along the path moves every range uniformly, which b absorbs
-        return np.r_[np.arccos(cosang) / _SIG_ANG,
-                     np.arctan2(np.sin(dth), np.cos(dth)) / _SIG_ANG,
-                     r_res / _SIG_RNG,
-                     br / _SIG_B_PRIOR]
-
-    p0 = np.r_[best.x[:6], r2.x[3], r2.x[:3]]
-    # x_scale/max_nfev: with the default budget (100*nfev) the numeric
-    # jacobian runs out of evaluations before converging on the
-    # mildly ill-conditioned b_rng <-> P-radial direction
-    bnds = (np.r_[np.full(6, -np.inf), -_B_RNG_MAX, np.full(3, -np.inf)],
-            np.r_[np.full(6, np.inf), _B_RNG_MAX, np.full(3, np.inf)])
-    return least_squares(joint_resid, p0, loss="huber", f_scale=2.0,
-                         x_scale=np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                                           0.05, 1.0, 1.0, 1.0]),
-                         bounds=bnds, max_nfev=10000)
+    best3 = None
+    for cand in cands:
+        r3 = _refine(cand)
+        if best3 is None or r3.cost < best3.cost:
+            best3 = r3
+    return best3
 
 
 def calibrate(recording: str, obs: List[FrameObs],

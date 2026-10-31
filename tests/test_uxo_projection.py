@@ -214,6 +214,12 @@ def test_calibrate_recovers_synthetic_tank(arc, aim):
     assert calib.rms_cam_deg < 1.0
     assert calib.rms_az_deg < 1.0
     err_P = np.linalg.norm(calib.P - truth["P"])
+    # physical prior: the target is below the sensor head.  aim-line is
+    # near-degenerate under reflection across the sensor plane (~1% cost
+    # gap); without the bound the fit picked the mirror (P_z +0.04 vs
+    # -1.20) depending on floating-point details
+    z_son = min(up._centers(o.gantry)[1][2] for o in obs)
+    assert calib.P[2] < z_son, (calib.P, z_son)
     if arc:
         assert err_P < 0.15, f"P error {err_P:.3f} m"
         assert abs(calib.b_rng - truth["b"]) < 0.08
