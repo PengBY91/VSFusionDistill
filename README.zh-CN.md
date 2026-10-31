@@ -2,42 +2,23 @@
 
 [English](README.md) | 中文
 
-**一句话**：水下机器人同时带着前视声呐和相机出海。声呐不受浊度影响，
-相机画质却随浊度与光照**连续退化**——从清水（D0）到重度退化（D4），
-直到完全不可用（D∞）。本代码库在整条可靠性轴上训练与评测双流声光
-检测器，回答两个问题：**训练期特权蒸馏**（教师看*清晰*相机，学生看
-退化相机）是否比推理期特征融合更能保住声呐支路；以及这种"互增强"
-的代价——两条支路的误差被拉相关了多少（下游把两路检出当独立证据用）。
+水下机器人出海时，前视声呐和相机同时在线。声呐不受浊度影响；相机画质随浊度和光照连续退化，从清水（D0）到重度退化（D4），直到完全不可用（D∞）。本代码库在整条可靠性轴上训练和评测双流声光检测器，回答两个问题：训练期特权蒸馏（教师看清晰相机、学生看退化相机）是否比推理期特征融合更能保住声呐支路；这种"互增强"的代价是什么——两条支路的误差被拉相关了多少，而下游恰恰把两路检出当独立证据用。
 
-完整研究方案：`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md` ·
-实验台账（每个实验：设置/结果/解读/结论）：`doc/experiments.md` ·
-搭建过程日志：`doc/logs/`
+完整研究方案：`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`；实验台账（每个实验：设置/结果/解读/结论）：`doc/experiments.md`；搭建过程日志：`doc/logs/`。
 
-基础栈：MMDetection 3.3.0（YOLOX 系）+ mmengine 0.10.7 + torch 2.1.2，
-版本固定于 `env/`（本机另建 torch 2.7.1+cu128 的 `.venv-gpu` 跑
-RTX 5090，见 `env/ENVIRONMENT.md`）。不修改任何第三方仓库：
-`third_party/` 以固定 SHA 只读克隆（`tools/clone_third_party.sh`、
-`third_party/PINNED.md`）。
+基础栈：MMDetection 3.3.0（YOLOX 系）+ mmengine 0.10.7 + torch 2.1.2，版本固定于 `env/`（本机另建 torch 2.7.1+cu128 的 `.venv-gpu` 跑 RTX 5090，见 `env/ENVIRONMENT.md`）。第三方仓库一律不改：`third_party/` 以固定 SHA 只读克隆（`tools/clone_third_party.sh`、`third_party/PINNED.md`）。
 
 ## 1. 这份代码要解决什么问题
 
-部署现实：ROV/AUV 上前视声呐与相机同时在线，相机可靠性是**连续
-退化**，不是开关。现有方法只覆盖这条谱的两端——纯声呐蒸馏
-（CMOLD/CMHD，D∞ 端专家，相机清晰时浪费信息）与清水条件下的推理期
-融合（RSFusionDet 等，从未系统测过退化行为）。清水下融合对单支路的
-增益只有约 1 AP，提升空间在退化区。同时，库内没有任何声光检测工作
-报告过**支路间的误差相关性**，而下游（目标建图/关联）恰恰把逐模态
-检出当条件独立证据使用——互增强换来的 AP 可能在下游变成过度自信。
-完整论证见选题文档 §1。
+部署现实：ROV/AUV 上前视声呐与相机同时在线，相机可靠性是连续退化，不是开关。现有方法只覆盖这条谱的两端：纯声呐蒸馏（CMOLD/CMHD，D∞ 端专家，相机清晰时浪费信息）与清水条件下的推理期融合（RSFusionDet 等，从未系统测过退化行为）。清水下融合对单支路的增益只有约 1 AP，提升空间在退化区。另外，库内没有任何声光检测工作报告过支路间的误差相关性，而下游（目标建图/关联）恰恰把逐模态检出当条件独立证据使用，互增强换来的 AP 可能在下游变成过度自信。完整论证见选题文档 §1。
 
-本仓库用同一套框架（MMDetection/YOLOX）、同一份数据、同一个退化
-协议做受控比较：
+本仓库用同一套框架（MMDetection/YOLOX）、同一份数据、同一个退化协议做受控比较：
 
 | 研究问题 | 一句话 | 在代码里的载体 |
 |---|---|---|
 | RQ-0（闸门） | 相机退化时，推理期交叉注意力融合会不会拖累声呐支路（互毒害）？ | `s0_cross_attn` vs `s0_b0` 的逐支路 D0–D∞ 扫描（`tools/test.py`） |
 | RQ-1 | 对声呐支路，训练期蒸馏与推理期融合谁更有效？ | 方法空间 B1 vs B2/B3 vs M3（§2.4） |
-| RQ-2 | 蒸馏收益里「容量收益」（大教小学生）与「特权收益」（教师看清晰、学生看退化）各占多少？ | 2×2 归因：同容量/大教师 × 退化/清晰输入 |
+| RQ-2 | 蒸馏收益里"容量收益"（大教小学生）与"特权收益"（教师看清晰、学生看退化）各占多少？ | 2×2 归因：同容量/大教师 × 退化/清晰输入 |
 | RQ-3 | 跨平面方位窗蒸馏是否优于逐网格蒸馏？ | `aodet/models/losses/cross_plane_mil.py` |
 | RQ-4 | 互增强让两支路误差相关了多少？代价多大？ | `aodet/evaluation/branch_correlation.py` |
 
@@ -45,8 +26,7 @@ RTX 5090，见 `env/ENVIRONMENT.md`）。不修改任何第三方仓库：
 
 ### 2.1 学生模型：双流三头
 
-所有方法共用一个学生骨架 `TwoStreamYOLOX`（YOLOX-S 量级，教师/
-学生同家族，保证逐预测蒸馏对得上）：
+所有方法共用一个学生骨架 `TwoStreamYOLOX`（YOLOX-S 量级；教师/学生同家族，保证逐预测蒸馏对得上）：
 
 ```
 camera image ──► cam backbone ──► cam neck ──┬────────────────► camera head          (L_det^c)
@@ -58,18 +38,13 @@ sonar  image ──► son backbone ──► son neck ──┼──► fusion
                                                                  · D∞ 回退头 + 未耦合记账，评测单独报告
 ```
 
-- **camera head** 只看相机特征；**fused sonar head** 看融合特征（默认
-  交叉注意力，声呐查询相机）；两个头各自用本模态 GT 监督。
-- **uncoupled sonar head** 是设计关键（选题文档张力 1）：它给出
-  "未被相机耦合污染"的声呐输出，D∞ 时天然回退，评测时单独记账。
-- 去掉相机流（`camera_backbone=None` + `NoneFusion`）即 B0 纯声呐
-  基线——同一框架内的最强单模态参照。
+- camera head 只看相机特征，fused sonar head 看融合特征（默认交叉注意力，声呐查询相机），两个头各自用本模态 GT 监督。
+- uncoupled sonar head 是设计关键（选题文档张力 1）：它给出未被相机耦合污染的声呐输出，D∞ 时天然回退，评测时单独记账。
+- 去掉相机流（`camera_backbone=None` + `NoneFusion`）即 B0 纯声呐基线，是同一框架内的最强单模态参照。
 
 ### 2.2 特权蒸馏
 
-教师固定看**清晰**相机帧（几何增强师生同步施加），因此其输出可
-离线缓存；当前为在线 `no_grad` 前向（`FrozenTeacher`），缓存启用前
-须过等价测试。
+教师固定看清晰相机帧（几何增强师生同步施加），因此其输出可离线缓存；当前为在线 `no_grad` 前向（`FrozenTeacher`），缓存启用前须过等价测试。
 
 ```
 clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no_grad）
@@ -84,10 +59,7 @@ clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no
                                  · 窗按 M₀ 标定残差外扩
 ```
 
-训练分布：每个样本的相机输入按 s~p(s) 从 {D0,…,D4,D∞} 采样
-（`AOSampleDegLevel`）。D∞ 训练期物化为黑帧（batch 保持稠密，
-`dinf_mode="zero"`），测试期真正丢相机（batch 1，`dinf_mode="drop"`）。
-声呐永不退化——声呐配置轴属于兄弟课题 F1，不混入。
+训练分布：每个样本的相机输入按 s~p(s) 从 {D0,…,D4,D∞} 采样（`AOSampleDegLevel`）。D∞ 训练期物化为黑帧（batch 保持稠密，`dinf_mode="zero"`），测试期真正丢相机（batch 1，`dinf_mode="drop"`）。声呐永不退化：声呐配置轴属于兄弟课题 F1，不混入。
 
 ### 2.3 方法空间与当前进度
 
@@ -98,13 +70,11 @@ clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no
 | 特权蒸馏 | B1、M1–M5 | 冻结清晰教师 + branch_kd +（M4）跨平面 MIL | 模块与测试就绪（`teachers/`、`losses/`），训练配置待 S0 闸门后展开 |
 | 晚融合参照 | B5 | 两个单模态检测器结果级匹配融合 | 规划中（结构上无耦合，作支路相关性参照） |
 
-完整方法空间（B0–B6、M1–M5）定义见选题文档 §2.2；逐实验进度见
-`doc/experiments.md`。
+完整方法空间（B0–B6、M1–M5）定义见选题文档 §2.2；逐实验进度见 `doc/experiments.md`。
 
 ## 3. 整体架构与数据流
 
-任何源数据集先落入同一套配对格式，之后的数据集、训练、评测代码
-完全复用：
+任何源数据集先落入同一套配对格式，之后的数据集、训练、评测代码完全复用：
 
 ```mermaid
 flowchart TB
@@ -149,21 +119,11 @@ flowchart TB
 
 各阶段要点：
 
-1. **转换**：源数据集各写一个转换器（UXO 已全流程跑通，2573 对 +
-   投影报告；RSFusion/UMOD 转换器就绪待数据）。声呐框没有人工标注，
-   由 `uxo_projection` 用官方位姿做逐 recording 稳健标定后投影生成；
-   训练 GT 只用过门可见回波框（`sonar_gt_sources=("blob",)`，E06
-   gate：projected 帧按构造无回波），投影框（钳制到回波尺度）保留
-   作跨模态对应 π 与 `gt=all` 评测口径。
-2. **配对格式**：四个 JSON/CSV + 图片目录就是全部状态；`frame_meta.csv`
-   把每个 sample 键到两模态 COCO image id、split 与退化种子。
-3. **训练**：管线顺序固定「同步几何 → 退化采样 → fork&pack」，
-   无 Mosaic/MixUp（师生增强必须同步）；多种子用 `tools/run_seeds.sh`。
-4. **评测**：`tools/test.py` 逐退化档覆盖数据集 `deg_level` 字段后
-   推理，逐支路落盘预测与 AP；相关性工具只消费这些落盘文件——
-   所有方法共享同一条评测路径。
-5. **记录**：每个实验按五段式（设置/结果/解读/结论）进
-   `doc/experiments.md`，当日踩坑与排查链在 `doc/logs/`。
+1. 转换：源数据集各写一个转换器（UXO 已全流程跑通，2573 对 + 投影报告；RSFusion/UMOD 转换器就绪待数据）。声呐框没有人工标注，由 `uxo_projection` 用官方位姿做逐 recording 稳健标定后投影生成。训练 GT 只用过门可见回波框（`sonar_gt_sources=("blob",)`；E06 gate：projected 帧按构造无回波），投影框（钳制到回波尺度）保留作跨模态对应 π 与 `gt=all` 评测口径。
+2. 配对格式：四个 JSON/CSV + 图片目录就是全部状态；`frame_meta.csv` 把每个 sample 键到两模态 COCO image id、split 与退化种子。
+3. 训练：管线顺序固定"同步几何 → 退化采样 → fork&pack"，无 Mosaic/MixUp（师生增强必须同步）；多种子用 `tools/run_seeds.sh`。
+4. 评测：`tools/test.py` 逐退化档覆盖数据集 `deg_level` 字段后推理，逐支路落盘预测与 AP；相关性工具只消费这些落盘文件，所有方法共享同一条评测路径。
+5. 记录：每个实验按五段式（设置/结果/解读/结论）进 `doc/experiments.md`，当日踩坑与排查链在 `doc/logs/`。
 
 ## 4. 目录结构
 
@@ -202,52 +162,20 @@ python tools/collect_results.py work_dirs --out results/results.csv
 <root>/images/camera/...  images/sonar/...
 ```
 
-`frame_meta.csv` 把每个 `sample_id` 键接到两个 COCO image id、split
-与退化种子；`read_paired` 负责 CSV 类型归一。同步翻转仅当声呐方位轴
-0° 居中时合法（`sonar_zero_centred=True`）。
+`frame_meta.csv` 把每个 `sample_id` 键接到两个 COCO image id、split 与退化种子；`read_paired` 负责 CSV 类型归一。同步翻转仅当声呐方位轴 0° 居中时合法（`sonar_zero_centred=True`）。
 
 ## 7. 退化协议
 
-`aodet/datasets/transforms/camera_degradation.py`：物理有序算子
-（衰减 → 波长吸收 → 散射雾幕 → 模糊），级别 D0–D4、D∞（全黑/传感器
-缺失），按 (sample_id, level, seed) 确定性生成。训练按 p(s) 抽级别
-（F2 §5.2），D∞ 物化为黑帧（`dinf_mode="zero"`，batch 保持稠密）；
-测试期 D∞ 丢弃相机（`dinf_mode="drop"`，batch 1）。离线固定测试集：
-`tools/make_degraded_testsets.py`（逐级别 sha256 manifest）。
+`aodet/datasets/transforms/camera_degradation.py`：物理有序算子（衰减 → 波长吸收 → 散射雾幕 → 模糊），级别 D0–D4、D∞（全黑/传感器缺失），按 (sample_id, level, seed) 确定性生成。训练按 p(s) 抽级别（F2 §5.2），D∞ 物化为黑帧（`dinf_mode="zero"`，batch 保持稠密）；测试期 D∞ 丢弃相机（`dinf_mode="drop"`，batch 1）。离线固定测试集：`tools/make_degraded_testsets.py`（逐级别 sha256 manifest）。
 
 ## 8. 评测
 
-基于保存的预测文件按退化级别出逐支路 AP（`tools/test.py` →
-`pred.<branch>.<level>.json` + `ap_summary.json`）；声呐支路同时报
-全量 GT 与 blob 子集两个口径（`gt=all` / `gt=blob`）——投影框带
-标定距离维误差，blob 子集是干净参照。支路误差相关性
-（φ、带 bootstrap 置信区间的条件漏检升幅 ΔP_miss、Spearman 置信
-相关、朴素贝叶斯融合存在性 ECE）实现在
-`aodet/evaluation/branch_correlation.py`，经 `tools/correlation_table.py`
-对 run 目录输出 `correlation.csv`。
+基于保存的预测文件按退化级别出逐支路 AP（`tools/test.py` → `pred.<branch>.<level>.json` + `ap_summary.json`）。声呐支路同时报全量 GT 与 blob 子集两个口径（`gt=all` / `gt=blob`）：投影框带标定距离维误差，blob 子集是干净参照。支路误差相关性（φ、带 bootstrap 置信区间的条件漏检升幅 ΔP_miss、Spearman 置信相关、朴素贝叶斯融合存在性 ECE）实现在 `aodet/evaluation/branch_correlation.py`，经 `tools/correlation_table.py` 对 run 目录输出 `correlation.csv`。
 
 ## 9. 状态（2026-10-31）
 
-- W1 环境安装并验证；COCO YOLOX-S 复现门在 val2017 全量（5000 图）
-  通过（AP 40.30 vs 官方 40.5）；W2 配对格式/退化/变换/指标完成并有
-  测试；W3 模型+配置+工具完成，S0-lite 在合成数据上端到端冒烟通过。
-- UXO sample 核验（×3 标注规则、GoPro 对齐、外参）并转换：
-  `data/paired/uxo/` 下 2573 对（E07 划分：test = 100927 弧 +
-  124735 线，train 1680 / test 893 帧——每段 test 录音恰有一个
-  新颖维）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：
-  逐 recording 稳健标定 + `b_rng` 锚定 + 投影，`sonar.json` 已标注
-  （blob 1195 / projected 1378），`pairs.csv` 已写；误差统计与拼图见
-  `data/paired/uxo/projection_report.json` / `projection_check.jpg`
-  及 W1–W3 日志。
-- 本机 GPU 环境就绪，可跑 S0-lite（RTX 5090 D v2 24 GB）：`.venv-gpu`
-  = torch 2.7.1+cu128 + 源码 CPU-ops mmcv 2.1.0 + NMS CPU 回退
-  （`aodet/cuda_compat.py`）——见 `env/ENVIRONMENT.md`。固定 cu121
-  栈无法跑 Blackwell；CPU 调试 `.venv` 未动。
-- S0-lite 首跑暴露 GT 语义缺陷：几何投影框在水池距离横跨半幅图而
-  真实回波紧凑，训练虽收敛 AP 仍 ≈0（E04）；投影框已钳制到回波尺度。
-  钳制后的重训（E05）test AP 仍 ≈0 而 train AP50=0.80——终判：
-  E02 划分混淆了几何（3 弧全 train / 2 线全 test）+ projected 框
-  落在无回波帧（E06 gate）。E06 锚定标定（blob 帧 dy p50 1.5–6 px）
-  并把训练 GT 改为 blob-only；E07 在单维新颖划分上重训
-  B0 + cross-attn。
+- W1 环境安装并验证；COCO YOLOX-S 复现门在 val2017 全量（5000 图）通过（AP 40.30 vs 官方 40.5）。W2 配对格式/退化/变换/指标完成并有测试；W3 模型+配置+工具完成，S0-lite 在合成数据上端到端冒烟通过。
+- UXO sample 核验（×3 标注规则、GoPro 对齐、外参）并转换：`data/paired/uxo/` 下 2573 对（E07 划分：test = 100927 弧 + 124735 线，train 1680 / test 893 帧，每段 test 录音恰有一个新颖维）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：逐 recording 稳健标定 + `b_rng` 锚定 + 投影，`sonar.json` 已标注（blob 1195 / projected 1378），`pairs.csv` 已写；误差统计与拼图见 `data/paired/uxo/projection_report.json` / `projection_check.jpg` 及 W1–W3 日志。
+- 本机 GPU 环境就绪，可跑 S0-lite（RTX 5090 D v2 24 GB）：`.venv-gpu` = torch 2.7.1+cu128 + 源码 CPU-ops mmcv 2.1.0 + NMS CPU 回退（`aodet/cuda_compat.py`），见 `env/ENVIRONMENT.md`。固定 cu121 栈无法跑 Blackwell；CPU 调试 `.venv` 未动。
+- S0-lite 首跑暴露 GT 语义缺陷：几何投影框在水池距离横跨半幅图而真实回波紧凑，训练虽收敛 AP 仍 ≈0（E04）；投影框已钳制到回波尺度。钳制后的重训（E05）test AP 仍 ≈0 而 train AP50=0.80，终判：E02 划分混淆了几何（3 弧全 train / 2 线全 test）+ projected 框落在无回波帧（E06 gate）。E06 锚定标定（blob 帧 dy p50 1.5–6 px）并把训练 GT 改为 blob-only；E07 在单维新颖划分上重训 B0 + cross-attn。
 - RSFusionDet 仓库仍为空（路线 a 监视中）。

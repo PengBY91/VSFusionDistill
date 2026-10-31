@@ -2,9 +2,9 @@
 
 > **范围**：对照 `doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`（草案）、
 > `doc/topic-f2-codebase-selection-and-setup-2026-10.md`（方案页）、`doc/experiments.md`（台账），
-> 审查 HEAD `1a69ba5` 的实现。重点是**蒸馏方法、损失函数、模型架构、训练逻辑（迭代、损失计算、反传）**。
+> 审查 HEAD `1a69ba5` 的实现。重点是蒸馏方法、损失函数、模型架构、训练逻辑（迭代、损失计算、反传）。
 >
-> **证据等级**：本次审查在一份全新的 clone 上进行，没有 `.venv`、`data/` 和 `work_dirs/`，因此**没有在真实数据上复跑**。
+> **证据等级**：本次审查在一份全新的 clone 上进行，没有 `.venv`、`data/` 和 `work_dirs/`，因此没有在真实数据上复跑。
 > 结论来自读代码，外加最小数值验证（E08 抖动抵消见 §1.2）。§1–§4 中每条都注明了"已验证 / 读码确认 / 需本机核实"。
 >
 > **补丁状态**：P0–P2 以及 §3.6(a–c)、§4.1–§4.4 已在分支 `fix/review-2026-10-31-kd-arch-training` 实现，并在 CPU `.venv` 下跑过全量测试（结果见 §6）；`.venv-gpu` 尚未复跑。
@@ -16,30 +16,30 @@
 
 | # | 级别 | 模块 | 问题 | 影响 | 修复节 |
 |---|---|---|---|---|---|
-| 1 | 🔴 | 训练 | KD 损失键名不含 `loss`，不参与反传 | 所有蒸馏实验（M1–M5）等于没有蒸馏 | §1.1 |
-| 2 | 🔴 | 训练 | E08 尺度抖动被后续固定尺寸 resize 完全抵消 | E08 的结论必然是假阴性 | §1.2 |
-| 3 | 🔴 | 架构 | CrossAttn 的 D∞ 训练路径（黑图过注意力和 LN）与测试路径（drop、跳过 LN）不一致 | D∞ 档"互毒害"会被人为制造出来 | §2.1 |
-| 4 | 🔴 | 架构 | 交叉注意力没有位置编码，也没有几何先验 | 学不到"相机列 ↔ 声呐方位"的对应；S0 测的不是 CAFusion 类机制 | §2.2 |
-| 5 | 🔴 | 损失 | objectness KD 用全图 MSE，前景信号被背景稀释，量级比检测损失低几个数量级 | 即使修好 #1，KD 也近似无效 | §3.1 |
-| 6 | 🔴 | 损失 | 类别 KD 用全图 softmax-KL，与 YOLOX 的逐类 sigmoid、只训正样本不匹配 | 蒸馏的是背景位置上的无语义 logit | §3.2 |
-| 7 | 🔴 | 评测 | `correlation_table.py` 不按 split 过滤，train 帧被记成"双支路同时漏检" | φ、ΔP_miss 被系统性虚高 | §4.1 |
-| 8 | 🟠 | 训练 | cross-attn 模型的声呐骨干承受两份声呐检测损失，B0 只有一份 | Δ_s 里混进了损失权重差 | §1.3 |
-| 9 | 🟠 | 训练 | 没有预训练初始化；lr 是 YOLOX 标准的 8 倍；BN/bias 做了 decay；没有 EMA；warmup 与 cosine 重叠 | 过拟合和跨录音泛化差无法单独归因 | §1.4 |
-| 10 | 🟠 | 训练 | D∞ 黑图上仍按相机 GT 计算相机检测损失 | 相机头学会靠位置先验幻觉出框 | §1.5 |
-| 11 | 🟠 | 训练 | 一次迭代里融合模块和各头前向两次 | 算力约翻倍，且 KD 与检测用的是两次独立前向 | §1.6 |
-| 12 | 🟡 | 训练 | `AOSampleDegLevel` 的 rng 种子写死为 0，`deg_seed` 恒为 0 | worker 间、训练种子间档位序列相同；3 种子方差里不含退化抽样方差 | §1.7 |
-| 13 | 🟠 | 架构 | 未耦合声呐头只在推理时解耦，训练时与融合头共用骨干 | RQ-4 的"独立性"读数需要重新定义 | §2.3 |
-| 14 | 🟠 | 架构 | `ConcatFusion` 把相机特征插值到声呐网格后逐像素拼接 | 默认两平面已配准，是草案批评 CMHD 的同一错误 | §2.4 |
-| 15 | 🟠 | 蒸馏 | 有融合头时，未耦合声呐头不接受 KD（`elif`） | 测不到"特权信息进入声呐本身"（Q5 机制） | §3.3 |
-| 16 | 🟠 | 蒸馏 | 可达性代理量若取教师融合头，会形成循环论证 | §5.4 落地时容易做错 | §3.4 |
-| 17 | 🟠 | 蒸馏 | `FrozenTeacher` 以 `strict=False` 加载 | 键名不匹配时教师为随机权重，且无报错 | §3.5 |
-| 18 | 🟠 | 损失 | L_xp 不是单边约束；硬 max；方位→列为线性映射；M₀ 忽略视差和畸变 | 违背"只传正证据"；几何误差大 | §3.6 |
-| 19 | 💡 | 设计 | 2×2 需要训练 4 个教师，格子之间不是配对比较 | 成本高、方差大 | §3.7 |
-| 20 | 🔴 | 设计 | 没有验证集，test 录音被用于诊断和定参（E08 的抖动范围来自 100927） | 违反草案 §6.1"测试集只评测一次" | §4.3 |
-| 21 | 🟠 | 设计 | S0-lite 的融合模型带退化训练（接近 B4），缺少名义训练的 B2 | RQ-0 问的问题没有被直接测量 | §4.4 |
-| 22 | 🟠 | 评测 | blob 口径删掉了 projected 帧的 GT，但这些帧仍在 `img_ids` 中 | 在这些帧上的正确检测全部算作虚警 | §4.2 |
-| 23 | 🟡 | 文档 | E01 称 NMS 0.65 / score 0.01 已固化进模型配置，实际仍是 0.55 / 0.05；TODO 14.2 calib-cache 已完成但未勾选 | 台账与代码不一致 | §4.5 |
-| 24 | 🟡 | 数据 | test 录音 100927 正是标定最可疑的一段（b 顶界，锚定 −0.79 m） | GT 质量与泛化性能混在一起 | §4.3 |
+| 1 | 高 | 训练 | KD 损失键名不含 `loss`，不参与反传 | 所有蒸馏实验（M1–M5）等于没有蒸馏 | §1.1 |
+| 2 | 高 | 训练 | E08 尺度抖动被后续固定尺寸 resize 完全抵消 | E08 的结论必然是假阴性 | §1.2 |
+| 3 | 高 | 架构 | CrossAttn 的 D∞ 训练路径（黑图过注意力和 LN）与测试路径（drop、跳过 LN）不一致 | D∞ 档"互毒害"会被人为制造出来 | §2.1 |
+| 4 | 高 | 架构 | 交叉注意力没有位置编码，也没有几何先验 | 学不到"相机列 ↔ 声呐方位"的对应；S0 测的不是 CAFusion 类机制 | §2.2 |
+| 5 | 高 | 损失 | objectness KD 用全图 MSE，前景信号被背景稀释，量级比检测损失低几个数量级 | 即使修好 #1，KD 也近似无效 | §3.1 |
+| 6 | 高 | 损失 | 类别 KD 用全图 softmax-KL，与 YOLOX 的逐类 sigmoid、只训正样本不匹配 | 蒸馏的是背景位置上的无语义 logit | §3.2 |
+| 7 | 高 | 评测 | `correlation_table.py` 不按 split 过滤，train 帧被记成"双支路同时漏检" | φ、ΔP_miss 被系统性虚高 | §4.1 |
+| 8 | 中 | 训练 | cross-attn 模型的声呐骨干承受两份声呐检测损失，B0 只有一份 | Δ_s 里混进了损失权重差 | §1.3 |
+| 9 | 中 | 训练 | 没有预训练初始化；lr 是 YOLOX 标准的 8 倍；BN/bias 做了 decay；没有 EMA；warmup 与 cosine 重叠 | 过拟合和跨录音泛化差无法单独归因 | §1.4 |
+| 10 | 中 | 训练 | D∞ 黑图上仍按相机 GT 计算相机检测损失 | 相机头学会靠位置先验幻觉出框 | §1.5 |
+| 11 | 中 | 训练 | 一次迭代里融合模块和各头前向两次 | 算力约翻倍，且 KD 与检测用的是两次独立前向 | §1.6 |
+| 12 | 低 | 训练 | `AOSampleDegLevel` 的 rng 种子写死为 0，`deg_seed` 恒为 0 | worker 间、训练种子间档位序列相同；3 种子方差里不含退化抽样方差 | §1.7 |
+| 13 | 中 | 架构 | 未耦合声呐头只在推理时解耦，训练时与融合头共用骨干 | RQ-4 的"独立性"读数需要重新定义 | §2.3 |
+| 14 | 中 | 架构 | `ConcatFusion` 把相机特征插值到声呐网格后逐像素拼接 | 默认两平面已配准，是草案批评 CMHD 的同一错误 | §2.4 |
+| 15 | 中 | 蒸馏 | 有融合头时，未耦合声呐头不接受 KD（`elif`） | 测不到"特权信息进入声呐本身"（Q5 机制） | §3.3 |
+| 16 | 中 | 蒸馏 | 可达性代理量若取教师融合头，会形成循环论证 | §5.4 落地时容易做错 | §3.4 |
+| 17 | 中 | 蒸馏 | `FrozenTeacher` 以 `strict=False` 加载 | 键名不匹配时教师为随机权重，且无报错 | §3.5 |
+| 18 | 中 | 损失 | L_xp 不是单边约束；硬 max；方位→列为线性映射；M₀ 忽略视差和畸变 | 违背"只传正证据"；几何误差大 | §3.6 |
+| 19 | 建议 | 设计 | 2×2 需要训练 4 个教师，格子之间不是配对比较 | 成本高、方差大 | §3.7 |
+| 20 | 高 | 设计 | 没有验证集，test 录音被用于诊断和定参（E08 的抖动范围来自 100927） | 违反草案 §6.1"测试集只评测一次" | §4.3 |
+| 21 | 中 | 设计 | S0-lite 的融合模型带退化训练（接近 B4），缺少名义训练的 B2 | RQ-0 问的问题没有被直接测量 | §4.4 |
+| 22 | 中 | 评测 | blob 口径删掉了 projected 帧的 GT，但这些帧仍在 `img_ids` 中 | 在这些帧上的正确检测全部算作虚警 | §4.2 |
+| 23 | 低 | 文档 | E01 称 NMS 0.65 / score 0.01 已固化进模型配置，实际仍是 0.55 / 0.05；TODO 14.2 calib-cache 已完成但未勾选 | 台账与代码不一致 | §4.5 |
+| 24 | 低 | 数据 | test 录音 100927 正是标定最可疑的一段（b 顶界，锚定 −0.79 m） | GT 质量与泛化性能混在一起 | §4.3 |
 
 建议修复顺序见 §5。
 
@@ -47,7 +47,7 @@
 
 ## 1. 训练逻辑（迭代、损失计算、反传）
 
-### 1.1 🔴 KD 损失不参与反传（读码确认）
+### 1.1 KD 损失不参与反传（读码确认）
 
 **位置**：`aodet/models/detectors/two_stream_yolox.py:223`
 
@@ -109,7 +109,7 @@ def test_kd_loss_reaches_student_gradients():
     assert g and float(sum(g)) > 0
 ```
 
-### 1.2 🔴 E08 尺度抖动被 resize 抵消（已数值验证）
+### 1.2 E08 尺度抖动被 resize 抵消（已数值验证）
 
 **位置**：`configs/f2/e08_s0_b0_sonar_only_yoloxs.py:14–17`，`configs/f2/e08_s0_cross_attn_yoloxs.py`
 
@@ -123,9 +123,9 @@ def test_kd_loss_reaches_student_gradients():
 | 1.0 | 24.67 px | 25 |
 | 1.8 | 24.66 px | 25 |
 
-**后果**：E08 若按现在的配置启动，预登记标准 1 会判"仍 < 0.01 → 外观域主导成立，尺度抖动弃用"。这是一个**假阴性**，会把决策引向错误的分支。
+**后果**：E08 若按现在的配置启动，预登记标准 1 会判"仍 < 0.01 → 外观域主导成立，尺度抖动弃用"。这是一个假阴性，会把决策引向错误的分支。
 
-**修改**：把抖动放到 resize **之后**，在固定画布上缩放行向，再裁剪或补边，保持画布尺寸不变。
+**修改**：把抖动放到 resize 之后，在固定画布上缩放行向，再裁剪或补边，保持画布尺寸不变。
 
 ```python
 # aodet/datasets/transforms/paired_geometric.py —— 替换 AOSonarScaleJitter
@@ -244,7 +244,7 @@ def test_scale_jitter_survives_full_train_pipeline():
 
 **台账**：E08 节"设置"中的"`AOLoadPaired` 之后、`AOPairedResize` 之前"要改为"之后"，并注明本次勘误。预登记标准不变（这次改的是实现 bug，不是标准）。
 
-### 1.3 🟠 B0 与 cross-attn 的声呐监督强度不对等（读码确认）
+### 1.3 B0 与 cross-attn 的声呐监督强度不对等（读码确认）
 
 **位置**：`configs/_base_/models/two_stream_yolox_s.py`，`loss_weights=dict(camera=1.0, fused_sonar=1.0, uncoupled_sonar=1.0)`
 
@@ -276,7 +276,7 @@ def test_sonar_supervision_weight_matched():
     assert sonar_w(b0) == pytest.approx(sonar_w(ca))
 ```
 
-### 1.4 🟠 训练配方：无预训练、lr 过大、decay/EMA/调度（读码确认）
+### 1.4 训练配方：无预训练、lr 过大、decay/EMA/调度（读码确认）
 
 **现状与问题**：
 
@@ -357,11 +357,11 @@ custom_hooks = [
 ```
 
 注意：
-- **不要**直接加 mmdet 的 `YOLOXModeSwitchHook`。它会访问 `model.bbox_head`，在 `TwoStreamYOLOX` 上会抛 AttributeError。如果需要最后 15 个 epoch 的 L1 损失，写一个自定义 hook，对三个头分别设置 `use_l1=True`。
+- 不要直接加 mmdet 的 `YOLOXModeSwitchHook`。它会访问 `model.bbox_head`，在 `TwoStreamYOLOX` 上会抛 AttributeError。如果需要最后 15 个 epoch 的 L1 损失，写一个自定义 hook，对三个头分别设置 `use_l1=True`。
 - 有蒸馏时，EMA 会连教师参数一起复制（教师参数不变，只是浪费显存）。可以在 EMA 的 `ema_model` 构造中排除 `teacher.` 前缀，或者接受这部分开销。
 - 修改后，所有方法共用这一份配方（草案 §6.2 的公平性约束不变）。
 
-### 1.5 🟠 D∞ 黑图上仍训练相机检测（读码确认）
+### 1.5 D∞ 黑图上仍训练相机检测（读码确认）
 
 **位置**：`configs/_base_/datasets/paired_uxo.py:26`（`dinf_mode="zero"`），`aodet/datasets/transforms/pack_paired.py:AOStudentCameraView`
 
@@ -425,7 +425,7 @@ def test_dinf_clears_camera_gt():
     assert out["img_camera_clear"].max() == 128   # 教师仍看清晰图
 ```
 
-### 1.6 🟠 单次迭代中融合和头前向两次（读码确认）
+### 1.6 单次迭代中融合和头前向两次（读码确认）
 
 **位置**：`two_stream_yolox.py:180`（`loss()` 中的融合）与 `:215`（`_kd_losses()` 中再次融合），以及 `head.loss()` 和 `self.camera_head(cam_feats)` 等各前向一次
 
@@ -488,7 +488,7 @@ def loss(self, batch_inputs, batch_data_samples):
 
 **测试**：在同一个 batch 上，断言重构前后（固定种子、关闭 dropout）各检测损失项逐项相等，容差 1e-6。
 
-### 1.7 🟡 退化档位抽样的随机性（读码确认）
+### 1.7 退化档位抽样的随机性（读码确认）
 
 **位置**：`pack_paired.py:AOSampleDegLevel.__init__`（`np.random.default_rng(seed)`，seed 默认为 0）和 `transform`（`deg_seed` 取自 frame_meta，恒为 0）
 
@@ -531,7 +531,7 @@ class AOSampleDegLevel(BaseTransform):
 
 ## 2. 模型架构
 
-### 2.1 🔴 CrossAttn 的 D∞ 训练/测试路径不一致（读码确认）
+### 2.1 CrossAttn 的 D∞ 训练/测试路径不一致（读码确认）
 
 **位置**：`aodet/models/fusion/cross_attn.py:56`（D∞ 回退）与 `:67`（正常路径）；`configs/_base_/datasets/paired_uxo.py:26`（训练用 zero）与 `:37`（测试用 drop）
 
@@ -540,7 +540,7 @@ class AOSampleDegLevel(BaseTransform):
 | | 训练（`dinf_mode="zero"`） | 测试（`dinf_mode="drop"`, batch=1） |
 |---|---|---|
 | 相机输入 | 全黑图，照常经过相机流 | `None` |
-| 融合输出 | `LayerNorm(q + Attn(q, cam_black))` | `proj(sf)`，**不经过 LayerNorm，也没有注意力项** |
+| 融合输出 | `LayerNorm(q + Attn(q, cam_black))` | `proj(sf)`，不经过 LayerNorm，也没有注意力项 |
 
 融合头在测试的 D∞ 档看到的是训练中从未出现过的特征分布：没有归一化，尺度完全不同。融合声呐头在 D∞ 的掉分会有一部分是这个 bug 造成的，而它恰好会伪装成 RQ-0 要找的"互毒害"。
 
@@ -562,15 +562,15 @@ def test_cross_attn_dinf_train_test_consistent():
     torch.testing.assert_close(masked[0], dropped[0])
 ```
 
-### 2.2 🔴 交叉注意力没有位置信息，也没有几何先验（读码确认）
+### 2.2 交叉注意力没有位置信息，也没有几何先验（读码确认）
 
 **位置**：`aodet/models/fusion/cross_attn.py`
 
 **问题**：
-1. **没有位置编码**。q（声呐）和 kv（相机）都是纯内容 token。注意力的输出与相机 token 的排列顺序无关，每个声呐位置只能拿到一个"相机全局内容袋"的加权和，学不到"相机第 j 列 ↔ 声呐方位 θ"这种对应关系。这正是草案张力 4 的核心，而现在的结构从原理上就表达不了。
-2. **与要研究的机制不对应**。RSFusionDet 的 CAFusion 是带参考点的可变形交叉注意力。现在的全局无位置注意力测出的"互毒害"不能外推到 CAFusion 类方法，RQ-0 的结论层级需要据此限定。
-3. **代价**。P3 层是 80×80 = 6400 个 token，6400×6400 的全局注意力既贵又没有必要：相机里一个目标只对应声呐里一条方位窗。
-4. **初始化**。`LayerNorm(q + attended)`，注意力项从训练一开始就以满幅度注入随机的相机相关噪声，没有门控。
+1. 没有位置编码：q（声呐）和 kv（相机）都是纯内容 token。注意力的输出与相机 token 的排列顺序无关，每个声呐位置只能拿到一个"相机全局内容袋"的加权和，学不到"相机第 j 列 ↔ 声呐方位 θ"这种对应关系。这正是草案张力 4 的核心，而现在的结构从原理上就表达不了。
+2. 与要研究的机制不对应：RSFusionDet 的 CAFusion 是带参考点的可变形交叉注意力。现在的全局无位置注意力测出的"互毒害"不能外推到 CAFusion 类方法，RQ-0 的结论层级需要据此限定。
+3. 代价：P3 层是 80×80 = 6400 个 token，6400×6400 的全局注意力既贵又没有必要：相机里一个目标只对应声呐里一条方位窗。
+4. 初始化：`LayerNorm(q + attended)`，注意力项从训练一开始就以满幅度注入随机的相机相关噪声，没有门控。
 
 **修改方案 A（最小改动，推荐先做）**：在现有模块上加 2D 正弦位置编码、pre-norm 和 LayerScale γ（零初始化），并支持 `camera_valid` 掩码。
 
@@ -756,7 +756,7 @@ model = dict(fusion=dict(
 
 **台账影响**：S0-lite（E07）的 cross-attn 是"无位置编码的全局注意力"。在 §5.3 阶段结论里，RQ-0 的结论应限定为"该结构下"，不能外推到 CAFusion。
 
-### 2.3 🟠 未耦合声呐头"推理解耦、训练耦合"（读码确认）
+### 2.3 未耦合声呐头"推理解耦、训练耦合"（读码确认）
 
 **机制**：未耦合头和融合头共用声呐骨干与 neck。融合头的梯度经过融合模块回流到声呐骨干，相机信息会在训练期写进声呐特征。所以未耦合头在推理时不看相机，但它的特征是和相机共同训练出来的。
 
@@ -785,7 +785,7 @@ model = dict(fusion_detach_sonar=True)
 
 `predict()` 中的融合也要改为调用 `self._fuse(...)`，并传 `camera_valid`（测试时 batch=1，drop 后 `cam_feats is None`，传 None 即可）。
 
-### 2.4 🟠 ConcatFusion 默认两平面已配准（读码确认）
+### 2.4 ConcatFusion 默认两平面已配准（读码确认）
 
 **位置**：`aodet/models/fusion/concat.py:45`
 
@@ -810,7 +810,7 @@ cf_b = cf_cols.expand(-1, -1, sf.shape[-2], sf.shape[-1])
 
 ## 3. 蒸馏方法与损失函数
 
-### 3.1 🔴 objectness KD：全图 MSE 被背景稀释（读码确认）
+### 3.1 objectness KD：全图 MSE 被背景稀释（读码确认）
 
 **位置**：`aodet/models/losses/branch_kd.py:42`
 
@@ -856,12 +856,12 @@ def objectness_kd(s_obj, t_obj, bg_floor: float = 0.01,
     return num / den.clamp(min=1.0)
 ```
 
-### 3.2 🔴 类别 KD：softmax-KL 与 YOLOX 不匹配（读码确认）
+### 3.2 类别 KD：softmax-KL 与 YOLOX 不匹配（读码确认）
 
 **位置**：`aodet/models/losses/branch_kd.py:59`
 
 **问题**：
-1. YOLOX 的类别分支是**逐类 sigmoid**（多标签 BCE），而且只在 SimOTA 正样本上训练，目标是 IoU 感知的软标签。背景位置上的类别 logit 从来没有被监督过，没有语义。现在的做法是在**所有位置**上做**softmax** KL，等于在蒸馏噪声，还强行引入了类间互斥的假设。
+1. YOLOX 的类别分支是逐类 sigmoid（多标签 BCE），而且只在 SimOTA 正样本上训练，目标是 IoU 感知的软标签。背景位置上的类别 logit 从来没有被监督过，没有语义。现在的做法是在所有位置上做 softmax KL，等于在蒸馏噪声，还强行引入了类间互斥的假设。
 2. 文档错误：docstring 写的是 KL(student‖teacher)。`F.kl_div(input=log q_s, target=log p_t, log_target=True)` 实际计算的是 KL(teacher‖student)。后者才是标准蒸馏方向，只需改 docstring。
 
 **修改**：蒸馏**检测分数** σ(cls)·σ(obj)，也就是 YOLOX 推理时真正用来排序的量，用逐类 BCE，只在教师置信的位置上计算。
@@ -949,7 +949,7 @@ def test_objectness_kd_scale_comparable_to_det_loss():
     assert objectness_kd(s, t) > 0.1
 ```
 
-### 3.3 🟠 未耦合声呐头接收不到 KD；缺少特征级蒸馏（读码确认）
+### 3.3 未耦合声呐头接收不到 KD；缺少特征级蒸馏（读码确认）
 
 **位置**：`two_stream_yolox.py:214–218`
 
@@ -962,7 +962,7 @@ elif self.uncoupled_sonar_head is not None and t_out.get("sonar") is not None:
 
 **问题**：
 1. 只要有融合头，未耦合头就收不到 KD。草案 §5.3 明确要求未耦合头"训练时同样接受蒸馏"。
-2. 更关键的是，Q5 的机制假设是"特权信息被写进**声呐表示本身**"。作用在融合头上的 KD，学生完全可以通过自己的（退化）相机通路去拟合，不必改进声呐特征。只有未耦合头上的 KD 增益，才能干净地读成"声呐被增强了"，这正是 RQ-2 最需要的读数。
+2. 更关键的是，Q5 的机制假设是"特权信息被写进声呐表示本身"。作用在融合头上的 KD，学生完全可以通过自己的（退化）相机通路去拟合，不必改进声呐特征。只有未耦合头上的 KD 增益，才能干净地读成"声呐被增强了"，这正是 RQ-2 最需要的读数。
 3. 只蒸馏头输出，监督信号太稀疏。头输出层面的蒸馏很容易被融合模块"吸收"掉。
 
 **修改 1：KD 路由显式化**（`routes` 见 §3.2 的 `branch_kd_losses`）。
@@ -1039,12 +1039,12 @@ if distillation and distillation.get("feat_weight", 0) > 0:
 
 注意：教师融合特征的通道数是 `embed_dim`（融合模块输出），学生 neck 是 128，所以 adapter 是必需的。adapter 只在训练时存在，推理不使用，不计入部署参数。
 
-### 3.4 🟠 可达性代理量的循环论证风险（设计问题，§5.4 未实现）
+### 3.4 可达性代理量的循环论证风险（设计问题，§5.4 未实现）
 
-**问题**：草案 §5.4 用"教师在**声呐头**上的 objectness"作为"目标在声呐里可见"的代理。但如果这里取的是教师的**融合**声呐头，它已经看过清晰相机，测到的主要是相机可见性，代理量就失效了。而现在的 `FrozenTeacher` 恰好优先取融合头（`head = model.fused_sonar_head or model.uncoupled_sonar_head`）。
+**问题**：草案 §5.4 用"教师在声呐头上的 objectness"作为"目标在声呐里可见"的代理。但如果这里取的是教师的融合声呐头，它已经看过清晰相机，测到的主要是相机可见性，代理量就失效了。而现在的 `FrozenTeacher` 恰好优先取融合头（`head = model.fused_sonar_head or model.uncoupled_sonar_head`）。
 
 **修改**：
-- 教师必须保留未耦合声呐头，可达性权重**只能**来自教师的未耦合头：`w = σ(k·(p_s^{T,uncoupled} − θ_w))`。
+- 教师必须保留未耦合声呐头，可达性权重只能来自教师的未耦合头：`w = σ(k·(p_s^{T,uncoupled} − θ_w))`。
 - 草案 §5.4 的写法需要相应更正为"教师**未耦合**声呐头的 objectness"。
 - 按草案原则，启用前先在验证集上检验这个代理量与"B0 单声呐模型实际召回"的相关性。
 
@@ -1068,7 +1068,7 @@ def reachability_weight(t_uncoupled_obj_logits, k=10.0, theta=0.3):
 # objectness_kd 中：w = p_t.clamp(min=bg_floor) * reach[i]
 ```
 
-### 3.5 🟠 `FrozenTeacher` 宽松加载（读码确认）
+### 3.5 `FrozenTeacher` 宽松加载（读码确认）
 
 **位置**：`aodet/models/teachers/frozen_teacher.py:48`
 
@@ -1076,7 +1076,7 @@ def reachability_weight(t_uncoupled_obj_logits, k=10.0, theta=0.3):
 self.model.load_state_dict(state.get("state_dict", state), strict=False)
 ```
 
-**问题**：教师 checkpoint 可能来自一次本身带教师的训练（键名带 `teacher.` 前缀），或者来自 EMA，或者键名有其他差异。`strict=False` 时，只要键对不上，教师就会**静默地保持随机权重**。蒸馏照样在跑，只是在蒸馏一个随机网络。
+**问题**：教师 checkpoint 可能来自一次本身带教师的训练（键名带 `teacher.` 前缀），或者来自 EMA，或者键名有其他差异。`strict=False` 时，只要键对不上，教师就会静默地保持随机权重。蒸馏照样在跑，只是在蒸馏一个随机网络。
 
 **修改**：
 
@@ -1100,7 +1100,7 @@ if ckpt:
 
 另外，方案页 §4.4(4) 写的是教师前向用 fp16 + no_grad，现在是 fp32。显存吃紧时再加 `torch.autocast`，不急。
 
-### 3.6 🟠 L_xp（跨平面 MIL）的问题（读码确认）
+### 3.6 L_xp（跨平面 MIL）的问题（读码确认）
 
 **位置**：`aodet/models/losses/cross_plane_mil.py`；`aodet/geometry/m0.py`
 
@@ -1112,15 +1112,15 @@ if ckpt:
 F.binary_cross_entropy(p_max, p_t)
 ```
 
-BCE 的目标是 p_t。当 p_max > p_t 时，它会把声呐峰值往**下**拉。例如声呐回波很清楚（0.95），相机教师只有 0.7，声呐就会被压到 0.7。这就是在传递负证据，违背草案 §5.3"只传正证据"的原则。
+BCE 的目标是 p_t。当 p_max > p_t 时，它会把声呐峰值往下拉。例如声呐回波很清楚（0.95），相机教师只有 0.7，声呐就会被压到 0.7。这就是在传递负证据，违背草案 §5.3"只传正证据"的原则。
 
 修改：只保留 BCE 的正项 `−p_t·log(p_max)`。它只会把峰值往上推，不会往下压。
 
-**(b) 硬 max 只把梯度传给一个位置**。训练早期 argmax 基本是随机的，收敛慢且不稳定。
+**(b) 硬 max 只把梯度传给一个位置**：训练早期 argmax 基本是随机的，收敛慢且不稳定。
 
 修改：用 top-k 均值作为软 max。
 
-**(c) 方位到特征列是线性映射**（`:102`）。ARIS 的 128 个波束在方位上**不均匀**，仓库里已有 `aris_beam_table.col_of_angle`，这里没有用上。
+**(c) 方位到特征列是线性映射**（`:102`）。ARIS 的 128 个波束在方位上不均匀，仓库里已有 `aris_beam_table.col_of_angle`，这里没有用上。
 
 修改：注入一个 `bearing_to_col` 函数。
 
@@ -1171,8 +1171,8 @@ class CrossPlaneMILLoss(torch.nn.Module):
 
 **(d) M₀ 的几何模型过于简化**（`m0.py`）：
 1. 像素到角度用的是仿射 `θ = slope·x + intercept`。针孔模型下应为 `atan((x − cx)/fx)`；GoPro 是广角，还有明显畸变，边缘误差会很大。
-2. UXO 的相机和声呐不共心。在约 1 m 的近场，基线视差带来的方位偏差约为 atan(b/r)：b = 0.1 m 时约 5.7°，在 ARIS 30° / 128 波束上大约相当于 25 个波束。所以方位对应**随距离变化**，"方位条带"本身就不准确。
-3. UXO 每段录音的相机方位是**分别标定**的（E03），单一 M₀ 不成立。而且 `m0.py` 的说明写的是"读取 F1 在 RSFusion 上的拟合"，这份拟合在 UXO 上并不存在。
+2. UXO 的相机和声呐不共心。在约 1 m 的近场，基线视差带来的方位偏差约为 atan(b/r)：b = 0.1 m 时约 5.7°，在 ARIS 30° / 128 波束上大约相当于 25 个波束。所以方位对应随距离变化，"方位条带"本身就不准确。
+3. UXO 每段录音的相机方位是分别标定的（E03），单一 M₀ 不成立。而且 `m0.py` 的说明写的是"读取 F1 在 RSFusion 上的拟合"，这份拟合在 UXO 上并不存在。
 
 **修改（推荐用于 UXO）：射线曲线 MIL**。UXO 有逐帧位姿和标定（`uxo_projection.py`）。对教师相机框的中心列，取它在相机中的射线，在 [r_min, r_max] 范围内采样若干个距离，投影到声呐 (row, col) 平面，得到一条**曲线**而不是竖直条带。MIL 沿这条曲线（按 M₀ 残差外扩成一个带）取软 max。
 
@@ -1182,7 +1182,7 @@ class CrossPlaneMILLoss(torch.nn.Module):
 
 M₀ 本身的修改：增加 `camera_model="pinhole"` 选项（`θ = atan((x·W − cx)/fx) + yaw`），并支持按录音加载（`load_m0(path)[recording]`）。
 
-### 3.7 💡 2×2 归因：更省、更干净的设计
+### 3.7 2×2 归因：更省、更干净的设计
 
 **现状设计（草案 §6.3）**：四个格子各用一个教师，共需训练 4 个教师（大容量 / 同容量 × 清晰输入 / 退化输入）。
 
@@ -1190,14 +1190,14 @@ M₀ 本身的修改：增加 `camera_model="pinhole"` 选项（`θ = atan((x·W
 - 教师训练成本高（草案 §6.5 估计 24–40 GPU 小时）。
 - M1 与 M3 使用的是**两个不同的教师网络**，特权效应 (M3 − M1) 里混进了两次教师训练之间的随机差异。
 
-**建议**：只训练 2 个教师（大容量、同容量），**训练时都带退化增强**（B3 式，D0–D4 都见过），这样清晰输入和退化输入对教师来说都在分布内。然后每个教师分别以两种方式喂入：
+**建议**：只训练 2 个教师（大容量、同容量），训练时都带退化增强（B3 式，D0–D4 都见过），这样清晰输入和退化输入对教师来说都在分布内。然后每个教师分别以两种方式喂入：
 
 | | 教师输入：学生同款退化相机 | 教师输入：清晰相机 |
 |---|---|---|
 | 同容量教师 T_s | D-self | M2 |
 | 大容量教师 T_L | M1 | M3 |
 
-- 特权效应 (M2 − D-self) 和 (M3 − M1)：同一份教师权重、只改输入，是**配对比较**，教师训练的方差被消掉了。
+- 特权效应 (M2 − D-self) 和 (M3 − M1)：同一份教师权重、只改输入，是配对比较，教师训练的方差被消掉了。
 - 容量效应 (M1 − D-self) 和 (M3 − M2)：仍然是跨教师比较，与原设计相同。
 - 教师训练次数从 4 减到 2。
 
@@ -1221,12 +1221,12 @@ distillation = dict(
 
 ## 4. 实验设计、评测与计划一致性
 
-### 4.1 🔴 相关性表：不按 split 过滤、GT 源与训练口径不一致（读码确认）
+### 4.1 相关性表：不按 split 过滤、GT 源与训练口径不一致（读码确认）
 
 **位置**：`tools/correlation_table.py:98`
 
 **问题**：
-1. `for fr in frames:` 遍历 `frame_meta.csv` 中**所有**帧。但预测文件只覆盖 test 帧。train 帧（E07 划分下 1680 帧，约占 65%）没有任何预测，两个支路都被判为漏检，构成大量强制的 (1,1) 配对，φ 和 ΔP_miss 被系统性虚高。
+1. `for fr in frames:` 遍历 `frame_meta.csv` 中所有帧。但预测文件只覆盖 test 帧。train 帧（E07 划分下 1680 帧，约占 65%）没有任何预测，两个支路都被判为漏检，构成大量强制的 (1,1) 配对，φ 和 ΔP_miss 被系统性虚高。
 2. 声呐 GT 用的是所有源的注释，含 projected 框（E06 已判定为"无回波帧上的几何猜测"），与 blob-only 训练口径不一致。声呐在这些帧上必然漏检，同样抬高相关性。
 3. 只报告第一个找到的声呐支路（融合头优先），不报告未耦合头。而草案张力 1 的"分开记账"正是要比较两者。
 4. 阈值 τ 固定为 0.25，不是草案 §6.4 要求的"验证集上每图 1 个虚警"的工作点。
@@ -1284,11 +1284,11 @@ ECE 接入：需要每个支路的 pD 与 pFA。pFA 要在**无目标**的帧或
 
 **测试**（`tests/test_correlation_table.py` 中新增）：构造 2 个 test 帧和 3 个 train 帧，train 帧没有预测；断言 `n_pairs == 2`，且 φ 与只用 test 帧手算的结果一致。
 
-### 4.2 🟠 blob 口径评测：projected 帧被当成负样本（读码确认）
+### 4.2 blob 口径评测：projected 帧被当成负样本（读码确认）
 
 **位置**：`tools/test.py`（`variants.append(("blob", filter_gt_sources(gt, ("blob",))))`，`img_ids` 不变）
 
-**机制**：`filter_gt_sources` 删掉了 projected 注释，但这些帧仍在 `img_ids` 里。这些帧里**物理上确实有目标**，只是启发式 blob 检测器没过门。模型如果在这里正确地检测到了弱回波，会被算作虚警，压低 precision，压低 AP。
+**机制**：`filter_gt_sources` 删掉了 projected 注释，但这些帧仍在 `img_ids` 里。这些帧里物理上确实有目标，只是启发式 blob 检测器没过门。模型如果在这里正确地检测到了弱回波，会被算作虚警，压低 precision，压低 AP。
 
 **修改**：blob 口径只在"有 blob 注释或完全没有注释"的帧上评测，把 projected-only 帧排除出去。
 
@@ -1320,7 +1320,7 @@ for gt_name, gt_v, ids in variants:
 - 可行的替代：在数据集中加一个选项 `sonar_skip_projected_frames=True`，让这些帧不参与**声呐**头的损失（相机头照常训练）。实现上可以在 pack 阶段打一个 `sonar_valid=False` 标记，在 `loss()` 里把该样本从声呐头的 `batch_data_samples` 中剔除（声呐特征同时按 batch 维切片）。
 - 两种处理（负样本 vs 跳过）做一个单种子对照，记入台账。
 
-### 4.3 🔴 没有验证集，test 被用于诊断和定参（台账确认）
+### 4.3 没有验证集，test 被用于诊断和定参（台账确认）
 
 **事实**：
 - `uxo_to_paired.py` 只产生 train/test 两个 split。
@@ -1330,7 +1330,7 @@ for gt_name, gt_v, ids in variants:
 **后果**：E08 即便成功，也是在 test 统计量上调出来的方法在 test 上的结果，已经不是一个干净的泛化测量。另外，sample 只有 5 段录音，任何录音级划分的 test 都只有 2 段，结论只能算个例。
 
 **修改**：
-1. **立刻**：在台账中给 E05–E08 补一条"test 已被用于诊断，结果为开发集性质"的注记。今后 sample 上的所有诊断明确称为"开发集"。
+1. 立刻：在台账中给 E05–E08 补一条"test 已被用于诊断，结果为开发集性质"的注记。今后 sample 上的所有诊断明确称为"开发集"。
 2. **短期（仍在 sample 上）**：用录音级留一交叉验证（LOO-CV，5 折）作为开发协议，按折报告均值和极差。数据集按录音过滤（`frame_meta.csv` 已经有 `recording` 列）：
 
 ```python
@@ -1365,12 +1365,12 @@ done
 3. **中期**：下载全量 UXO（草案 TODO 14.2 第 4 项），按"train / val / test 三份录音级划分"冻结协议；test 录音在冻结后只评测一次。
 4. test 录音的选择应当避开标定最可疑的录音（100927：b 顶在边界上、锚定量 −0.79 m），或者把它的 GT 质量问题单独列为一个已知混淆。
 
-### 4.4 🟠 S0-lite 偏离 RQ-0 的设计（读码确认）
+### 4.4 S0-lite 偏离 RQ-0 的设计（读码确认）
 
 **事实**：
 - 草案 §3 的 S0：在**名义条件训练**的融合模型（B2，RSFusionDet 官方）上做推理期退化扫描，测 Δ_s；然后再训练 B3（退化增强）看能恢复多少。
 - 现在唯一的融合配置 `s0_cross_attn_yoloxs.py` 继承 `paired_uxo.py` 的训练管线，带 `AOSampleDegLevel`（D0–D4 各 0.16，D∞ 0.2）。这是"退化增强 + 模态丢弃"，接近 B4。
-- 带 D∞ 和退化训练的模型，本来就被训练成在相机退化时不依赖相机，最可能**掩盖**互毒害。用它回答 RQ-0，方向上偏向得出"不存在"的结论。
+- 带 D∞ 和退化训练的模型，本来就被训练成在相机退化时不依赖相机，最可能掩盖互毒害。用它回答 RQ-0，方向上偏向得出"不存在"的结论。
 
 **修改**：增加名义训练的 B2 配置，与现有配置（改名为 B4-lite）并列。
 
@@ -1408,7 +1408,7 @@ train_pipeline = [
 
 S0-lite 的最小矩阵因此是：B0、B2、B3、B4-lite，各 1 个种子，都在验证协议（§4.3）下评测。RQ-0 的核心读数是 B2 的 Δ_s(D4)，其次看 B3 和 B4 恢复了多少。
 
-### 4.5 🟡 台账与代码不一致（读码确认）
+### 4.5 台账与代码不一致（读码确认）
 
 | 位置 | 台账 / 草案的说法 | 代码现状 | 处理 |
 |---|---|---|---|
@@ -1417,7 +1417,7 @@ S0-lite 的最小矩阵因此是：B0、B2、B3、B4-lite，各 1 个种子，�
 | 草案 TODO 14.3 W3 | "关闭 Mosaic 和 MixUp" 已勾选 | 一致 | — |
 | `doc/experiments.md` E08 设置 | 抖动"在 `AOLoadPaired` 之后、`AOPairedResize` 之前" | 这个顺序正是 bug 所在 | 按 §1.2 修改，加勘误注记 |
 | `m0.py` 说明 | "读取 F1 在 RSFusion 上的拟合" | UXO 上并不存在这份拟合 | 按 §3.6(d) 修改，支持按录音加载 |
-| 草案 §5.4 | "教师在声呐头上的 objectness" | — | 改为"教师**未耦合**声呐头的 objectness"（§3.4） |
+| 草案 §5.4 | "教师在声呐头上的 objectness" | — | 改为"教师未耦合声呐头的 objectness"（§3.4） |
 
 ---
 
@@ -1445,7 +1445,7 @@ S0-lite 的最小矩阵因此是：B0、B2、B3、B4-lite，各 1 个种子，�
 `pytest` 共 130 项。
 
 - 合入时（`f5cf12d`）：129 通过，1 失败。失败项是 `tests/test_uxo_projection.py::test_calibrate_recovers_synthetic_tank[aim-line]`（`P error 1.246 m`，断言阈值 0.8 m）。这项失败与本分支无关：在未修改的 `main`（`1a69ba5`）上用同一环境复跑，同样失败。
-- 标定修复后（`11fcb19`，见 §7）：**130 项全部通过**，用时约 18 分钟（瞄准模式标定变慢）。唯一的警告是 torch 自身的 `meshgrid` 弃用提示。
+- 标定修复后（`11fcb19`，见 §7）：130 项全部通过，用时约 18 分钟（瞄准模式标定变慢）。唯一的警告是 torch 自身的 `meshgrid` 弃用提示。
 - `.venv-gpu`（torch 2.7.1+cu128）尚未复跑。
 
 **新增或修改的回归测试**：KD 梯度可达（§1.1）、E08 抖动的管线级测试和配置顺序（§1.2）、声呐监督权重对等（§1.3）、YOLOX 配方（§1.4）、D∞ 清空相机 GT（§1.5）、单次前向与 `head.loss` 逐项一致（§1.6）、退化抽样随机性（§1.7）、三种融合的 D∞ 训练/测试一致性（§2.1）、位置感知与 LayerScale（§2.2）、方位注意力（§2.2B）、KD 前景加权、量级和分数蒸馏（§3.1–§3.2）、KD 路由与特征 KD、可达性权重（§3.3–§3.4）、教师严格加载（§3.5）、L_xp 单边约束与非线性方位映射（§3.6）、相关性表的 split / 录音 / GT 源过滤与双声呐头输出（§4.1）、blob 口径的 img_ids（§4.2）、B2 配置（§4.4）。

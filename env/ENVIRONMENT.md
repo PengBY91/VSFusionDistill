@@ -30,30 +30,30 @@ reproduction number (acceptance: within 1 AP of the official 40.6/0.5 box).
 
 ## GPU environment on this box — `.venv-gpu` (2026-10-31)
 
-The debug machine's hardware changed: it now carries an **RTX 5090 D v2,
-24 455 MiB (Blackwell, sm_120)**, visible to WSL2 via `nvidia-smi` (the
+The debug machine's hardware changed: it now carries an RTX 5090 D v2,
+24 455 MiB (Blackwell, sm_120), visible to WSL2 via `nvidia-smi` (the
 2026-10-30 "no GPU visible" record above is outdated).  This meets the
 24 GB training requirement, so an S0-lite-capable env was built here.
 
-**Why the pinned cu121 stack cannot be used on it** (measured, not
+Why the pinned cu121 stack cannot be used on it (measured, not
 assumed): `torch 2.1.2+cu121` wheels contain only sm_50..sm_90 cubins
 with no PTX fallback, so on sm_120 every kernel launch raises
 `CUDA error: no kernel image is available for execution on the device`.
 sm_120 needs cu128, i.e. torch >= 2.7.
 
-**Deviations from the pins (deliberate, documented here):**
+Deviations from the pins (deliberate, documented here):
 
 | component  | pin        | .venv-gpu                | why |
 | ---------- | ---------- | ------------------------ | --- |
 | PyTorch    | 2.1.2      | 2.7.1+cu128              | first line with native sm_120 kernels; 2048² matmul 0.07 s, conv fwd+bwd OK |
 | torchvision| 0.16.2     | 0.22.1+cu128             | must match torch |
-| mmcv       | 2.1.0 wheel| 2.1.0 **source build, CPU-only ops** | OpenMMLab ships no wheels past cu121/torch2.4; mmdet 3.3.0 requires mmcv<2.2.0; no nvcc on this box |
+| mmcv       | 2.1.0 wheel| 2.1.0 source build, CPU-only ops | OpenMMLab ships no wheels past cu121/torch2.4; mmdet 3.3.0 requires mmcv<2.2.0; no nvcc on this box |
 | setuptools | —          | <81                      | mmcv 2.1.0 setup.py imports `pkg_resources` (removed in setuptools 81) |
 
 Everything else mirrors `env/pip-freeze.txt` (mmengine 0.10.7, mmdet
 3.3.0, numpy 1.26.4, ...); full freeze: `env/pip-freeze-gpu.txt`.
 
-**mmcv build recipe** (source tree kept at `~/mmcv-2.1.0-src`):
+mmcv build recipe (source tree kept at `~/mmcv-2.1.0-src`):
 
     pip install "setuptools<81" ninja
     CUDA_VISIBLE_DEVICES="" MMCV_WITH_OPS=1 \
@@ -64,7 +64,7 @@ Everything else mirrors `env/pip-freeze.txt` (mmengine 0.10.7, mmdet
 `CUDAExtension` branch, which dies on the missing `CUDA_HOME`.  Hiding
 the GPU lands it in the `CppExtension` (CPU-only ops) branch.
 
-**Consequence and mitigation**: the compiled `_ext` has CPU kernels
+Consequence and mitigation: the compiled `_ext` has CPU kernels
 only, so `mmcv.ops.nms` raises on CUDA tensors.  The training path uses
 no compiled mmcv op (YOLOX losses / SimOTA are pure torch; our paired
 transforms use `mmcv.transforms` only); inference-time NMS goes through
@@ -86,7 +86,7 @@ The pinned CPU/debug `.venv` is untouched and remains the reproducibility
 baseline; the cu121 `env/environment.yml` stays for any true 24 GB
 Ampere/Ada training machine where the pins work as-is.
 
-**Running S0-lite on this box** (the two configs fit the 24 GB card in
+Running S0-lite on this box (the two configs fit the 24 GB card in
 parallel, ~4 GB B0 + ~9 GB cross-attn):
 
     export PATH="$PWD/.venv-gpu/bin:$PATH"

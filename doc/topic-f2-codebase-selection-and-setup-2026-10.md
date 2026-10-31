@@ -18,11 +18,11 @@ keywords: [codebase, mmdetection, yolox, knowledge-distillation, RSFusionDet, UX
 
 ## 0 结论先行
 
-1. **RSFusionDet 的代码和数据都没有发布。** 官方仓库是空仓库（0 个提交）。F2 的 S0 写的是"跑通 RSFusionDet 官方代码"，现在无法执行。F1 把 RSFusion 当主数据，同样受影响。库内笔记"代码与数据开源"的说法不成立（第 1.1 节）。
-2. **UMOD 公开部分只有约 259 对，不是 4,000 对。** 用户在 2026-08 至 10 月多次报告，作者没有回复。UMOD 不足以承担外部测试（第 1.2 节）。
-3. **当前唯一能下载、又适合 F2 的真实声光配对数据是 Dahn UXO。** 它在 Zenodo 公开，BSD-3 许可，96.4 GB，有相机标注，还有声呐和目标的位姿，可以投影出声呐框和跨模态对应（第 1.4 节）。
-4. **底座建议用 MMDetection 3.3，默认检测家族用 YOLOX。** 依据有四条。第一，RSFusionDet 作者的整套工具链是 OpenMMLab，代码日后发布时大概率能直接接入。第二，YOLOX 和 DINO 两个家族都在同一框架内，F2 §5.1 "二选一"的决定可以推迟而不用换框架。第三，F1 W2 本来就在 ultralytics 和 mmdetection 之间选，两边共用一套管线最省事。第四，许可是 Apache-2.0。版本必须锁定（第 4.1 节）。
-5. **自写代码集中在四处：双输入数据模型、相机退化算子、蒸馏损失、逐支路评测与相关性指标。** 这四处都要先写单元测试，再接入训练（第 4.5 节）。其余部分只写 glue code，沿用[[comparisons/turbidity-aware-code-audit-and-reuse-principles|代码复用原则]]。
+1. RSFusionDet 的代码和数据都没有发布。官方仓库是空仓库（0 个提交）。F2 的 S0 写的是"跑通 RSFusionDet 官方代码"，现在无法执行。F1 把 RSFusion 当主数据，同样受影响。库内笔记"代码与数据开源"的说法不成立（第 1.1 节）。
+2. UMOD 公开部分只有约 259 对，不是 4,000 对。用户在 2026-08 至 10 月多次报告，作者没有回复。UMOD 不足以承担外部测试（第 1.2 节）。
+3. 当前唯一能下载、又适合 F2 的真实声光配对数据是 Dahn UXO。它在 Zenodo 公开，BSD-3 许可，96.4 GB，有相机标注，还有声呐和目标的位姿，可以投影出声呐框和跨模态对应（第 1.4 节）。
+4. 底座建议用 MMDetection 3.3，默认检测家族用 YOLOX，依据有四条。第一，RSFusionDet 作者的整套工具链是 OpenMMLab，代码日后发布时大概率能直接接入。第二，YOLOX 和 DINO 两个家族都在同一框架内，F2 §5.1 "二选一"的决定可以推迟而不用换框架。第三，F1 W2 本来就在 ultralytics 和 mmdetection 之间选，两边共用一套管线最省事。第四，许可是 Apache-2.0。版本必须锁定（第 4.1 节）。
+5. 自写代码集中在四处：双输入数据模型、相机退化算子、蒸馏损失、逐支路评测与相关性指标。这四处都要先写单元测试，再接入训练（第 4.5 节）。其余部分只写 glue code，沿用[[comparisons/turbidity-aware-code-audit-and-reuse-principles|代码复用原则]]。
 
 ## 1 核验发现
 
@@ -31,7 +31,7 @@ keywords: [codebase, mmdetection, yolox, knowledge-distillation, RSFusionDet, UX
 - `LEFTeyex/RSFusionDet` 创建于 2025-03-31。API 返回 "This repository is empty"，size 为 0，没有提交。
 - 三个 issue 都在问什么时候开源：2025-08-05 一个，2026-08-27 一个（Hugging Face 团队邀请上传），2026-08-31 一个。作者没有回复。
 - Hugging Face 上没有作者账号下的数据集或模型，也搜不到 RSFusion。
-- **作者的工具链**：`LEFTeyex` fork 过 mmdetection、mmengine、mmcv、mmyolo。已发布的 [U-DECN](https://github.com/LEFTeyex/U-DECN)（TGRS 2025，水下检测）基于 mmdet 3.2.0、mmengine 0.10.1、mmcv 2.0.1 和 PyTorch 1.13.1。RSFusionDet 用 DINO 双分支，mmdet 3.x 自带 DINO，因此日后发布时大概率也是这套组合。
+- 作者的工具链：`LEFTeyex` fork 过 mmdetection、mmengine、mmcv、mmyolo。已发布的 [U-DECN](https://github.com/LEFTeyex/U-DECN)（TGRS 2025，水下检测）基于 mmdet 3.2.0、mmengine 0.10.1、mmcv 2.0.1 和 PyTorch 1.13.1。RSFusionDet 用 DINO 双分支，mmdet 3.x 自带 DINO，因此日后发布时大概率也是这套组合。
 - **影响**：F2 的 S0、B2 和 B3 都依赖官方代码。F1 §6 写的"RSFusion 已开源"需要改。[[2026-rsfusiondet-rgb-sonar-detection-heu|RSFusionDet 笔记]]里的"可复现性 4.5/5"也需要下调。
 
 ### 1.2 UMOD：公开数据不完整
@@ -83,8 +83,8 @@ keywords: [codebase, mmdetection, yolox, knowledge-distillation, RSFusionDet, UX
 
 | 候选 | 许可与维护 | R1–R3 双输入多头 | R6 家族 | R9 接 RSFusionDet | 判断 |
 | --- | --- | --- | --- | --- | --- |
-| **MMDetection 3.3.0**（open-mmlab，33k 星） | Apache-2.0；最后推送 2024-08，事实上停更 | 需自写双图 transform 和 data preprocessor；多头和多损失在 `BaseDetector` 子类里写，较顺 | YOLOX 有 nano 到 x 全系 COCO 权重；DINO 有 r50 4scale 等配置 | 作者工具链，几乎可以直接接入 | **推荐** |
-| Megvii YOLOX（10.7k 星）＋ KD-YOLOX-ViT | Apache-2.0；最后推送 2025-06 | 代码小，改起来直接；评测和配置基础设施简陋 | 只有 YOLOX | DINO 基线要放在另一个环境，"同一框架"做不到 | **备选**（第 5 节） |
+| MMDetection 3.3.0（open-mmlab，33k 星） | Apache-2.0；最后推送 2024-08，事实上停更 | 需自写双图 transform 和 data preprocessor；多头和多损失在 `BaseDetector` 子类里写，较顺 | YOLOX 有 nano 到 x 全系 COCO 权重；DINO 有 r50 4scale 等配置 | 作者工具链，几乎可以直接接入 | 推荐 |
+| Megvii YOLOX（10.7k 星）＋ KD-YOLOX-ViT | Apache-2.0；最后推送 2025-06 | 代码小，改起来直接；评测和配置基础设施简陋 | 只有 YOLOX | DINO 基线要放在另一个环境，"同一框架"做不到 | 备选（第 5 节） |
 | Ultralytics（63k 星）及 RGBT 分支（如 YOLOv11-RGBT） | AGPL-3.0，产品部署有传染风险；版本更新很快 | RGBT 分支默认两路像素配准，单头共享标签，与声光不配准、逐模态标签的前提相反 | YOLO 系列 | 不兼容 | 不采用 |
 | detrex / IDEA DINO（detectron2 系） | Apache-2.0 | 可做，但更重 | 只有 DETR 系 | 不同栈 | 只有选定 DETR 家族、且 mmdet 不够用时才考虑 |
 | 从零写（如 SCFusion 式） | — | 自由 | — | — | 违反复用原则，不采用 |
@@ -158,14 +158,14 @@ ao-det/
 
 ### 4.4 八个关键设计决定
 
-1. **统一的配对数据格式。** 每个数据集只写一个转换器，转成"两份 COCO 风格标注加一张对应表"：`camera.json`、`sonar.json`、`pairs.csv`（camera_ann_id、sonar_ann_id、sample_id），另外写一份逐帧元数据（光照、量程、增益、退化档）。训练和评测代码只认这个格式。RSFusion 一旦可得，只需加一个转换器。
-2. **几何增强。** 两路不配准，所以缩放、裁剪可以各自独立。相机水平翻转对应声呐方位镜像，只有满足两个条件时才能同步做：声呐图以 0° 方位居中，并且 M₀ 的偏置项也随之取反。否则一律不做翻转。**F2 的所有方法都关闭 Mosaic 和 MixUp**。原因是拼接增强会破坏配对，也会让教师缓存失效。这样做的代价是 YOLOX 的绝对 AP 偏低，但各方法之间的比较仍然公平。
-3. **退化算子是风险最高的自写组件。** 测试集按档位离线生成一次，落盘并记录哈希，所有方法共用这一份。训练时在线生成，种子由样本 ID 决定。教师与学生的分叉点放在几何增强之后：先做完增强，复制一份清晰图给教师，再对另一份施加退化给学生。
-4. **教师先在线运行，再考虑离线缓存。** 先用冻结教师在线前向（fp16、no_grad）作为参考实现，这样增强一致性自动成立。离线缓存只是加速手段，必须先在一个子集上和在线版本对比，逐元素误差在容差内才能启用。草案 §5.2 的"离线缓存"作为第二步做，不作为第一步。
-5. **蒸馏损失写在自定义检测器里。** objectness 和类别 KL 参照 KD-YOLOX-ViT 的写法。L_xp 需要声呐特征处于"距离 × 方位"的矩形网格上，这样沿距离取最大才简单。声呐输入用极坐标矩形图还是扇形图，要在 W2 结合团队声呐只能输出图像的情况决定（见 log 2026-10-29 的声呐数据源判定）。
-6. **评测和训练分开。** 评测脚本只读预测结果文件（每个支路、每个退化档各一个 json），先输出 AP，再输出相关性指标。这样同一批预测可以反复分析，不用重新推理。
-7. **实验管理。** 每次运行的目录里保存完整配置、git 哈希、种子、环境摘要和 `results.csv` 的一行。3 个种子由 `run_seeds.sh` 统一下发。暂不引入 wandb，需要时再加 TensorBoard。
-8. **与 F1 共用。** 建议 F1 在 W2 选定 mmdetection。F1 只用单输入路径，也就是 `paired_dataset` 的声呐半边。划分脚本、M₀ 和评测在两个课题之间共用一份代码。
+1. 统一的配对数据格式：每个数据集只写一个转换器，转成"两份 COCO 风格标注加一张对应表"：`camera.json`、`sonar.json`、`pairs.csv`（camera_ann_id、sonar_ann_id、sample_id），另外写一份逐帧元数据（光照、量程、增益、退化档）。训练和评测代码只认这个格式。RSFusion 一旦可得，只需加一个转换器。
+2. 几何增强：两路不配准，所以缩放、裁剪可以各自独立。相机水平翻转对应声呐方位镜像，只有满足两个条件时才能同步做：声呐图以 0° 方位居中，并且 M₀ 的偏置项也随之取反。否则一律不做翻转。F2 的所有方法都关闭 Mosaic 和 MixUp，原因是拼接增强会破坏配对，也会让教师缓存失效。这样做的代价是 YOLOX 的绝对 AP 偏低，但各方法之间的比较仍然公平。
+3. 退化算子是风险最高的自写组件：测试集按档位离线生成一次，落盘并记录哈希，所有方法共用这一份。训练时在线生成，种子由样本 ID 决定。教师与学生的分叉点放在几何增强之后：先做完增强，复制一份清晰图给教师，再对另一份施加退化给学生。
+4. 教师先在线运行，再考虑离线缓存：先用冻结教师在线前向（fp16、no_grad）作为参考实现，这样增强一致性自动成立。离线缓存只是加速手段，必须先在一个子集上和在线版本对比，逐元素误差在容差内才能启用。草案 §5.2 的"离线缓存"作为第二步做，不作为第一步。
+5. 蒸馏损失写在自定义检测器里：objectness 和类别 KL 参照 KD-YOLOX-ViT 的写法。L_xp 需要声呐特征处于"距离 × 方位"的矩形网格上，这样沿距离取最大才简单。声呐输入用极坐标矩形图还是扇形图，要在 W2 结合团队声呐只能输出图像的情况决定（见 log 2026-10-29 的声呐数据源判定）。
+6. 评测和训练分开：评测脚本只读预测结果文件（每个支路、每个退化档各一个 json），先输出 AP，再输出相关性指标。这样同一批预测可以反复分析，不用重新推理。
+7. 实验管理：每次运行的目录里保存完整配置、git 哈希、种子、环境摘要和 `results.csv` 的一行。3 个种子由 `run_seeds.sh` 统一下发。暂不引入 wandb，需要时再加 TensorBoard。
+8. 与 F1 共用：建议 F1 在 W2 选定 mmdetection。F1 只用单输入路径，也就是 `paired_dataset` 的声呐半边。划分脚本、M₀ 和评测在两个课题之间共用一份代码。
 
 ### 4.5 先写测试的组件
 
