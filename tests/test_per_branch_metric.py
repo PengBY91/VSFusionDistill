@@ -99,3 +99,21 @@ def test_empty_predictions_score_zero():
 
 def test_branches_tuple_matches_plan():
     assert BRANCHES == ("camera", "sonar", "sonar_uncoupled")
+
+
+def test_filter_gt_sources():
+    """E05: blob-only GT variant keeps measured-echo annotations and
+    drops projected ones; annotations without a source tag pass."""
+    from aodet.evaluation.per_branch_metric import filter_gt_sources
+    gt = dict(images=GT["images"], categories=GT["categories"],
+              annotations=[
+                  dict(id=1, image_id=1, category_id=1, bbox=[1, 1, 2, 2],
+                       source="blob"),
+                  dict(id=2, image_id=1, category_id=1, bbox=[2, 2, 2, 2],
+                       source="projected"),
+                  dict(id=3, image_id=2, category_id=1, bbox=[1, 1, 2, 2]),
+              ])
+    out = filter_gt_sources(gt, ("blob",))
+    assert [a["id"] for a in out["annotations"]] == [1, 3]
+    assert filter_gt_sources(gt, ("blob", "projected"))["annotations"] \
+        == gt["annotations"]

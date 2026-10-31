@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover
 __all__ = [
     "BRANCHES",
     "coco_ap",
+    "filter_gt_sources",
     "evaluate_prediction_file",
     "collect_ap_table",
 ]
@@ -89,6 +90,23 @@ def coco_ap(
         "AP_large": float(s[5]),
         "AR@100": float(s[8]),
     }
+
+
+def filter_gt_sources(gt: Dict[str, Any],
+                      sources: Sequence[str]) -> Dict[str, Any]:
+    """Copy of a COCO GT dict keeping only annotations whose ``source``
+    field (written by the projection converter: "blob" = measured echo,
+    "projected" = calibrated geometry) is in ``sources``.
+
+    Motivation (E05): projected boxes carry the calibration's range-axis
+    error, so the all-GT number under-reports echo-detection quality;
+    reporting the blob-only subset alongside keeps a clean reference
+    while the calibration is improved.  Images/categories are passed
+    through untouched (COCOeval ignores imageless annotations).
+    """
+    anns = [a for a in gt.get("annotations", [])
+            if a.get("source", "blob") in sources]
+    return {**gt, "annotations": anns}
 
 
 def evaluate_prediction_file(

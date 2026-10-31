@@ -39,9 +39,18 @@ Facts baked in from the sample verification:
   ``include_unlabeled=True`` after a frame-level review confirms them.
 
 Recording-level splits avoid trajectory leakage.  The sample default
-puts the two short recordings in test (mortar + grenade; the bomb
+is the E07 split (2026-10-31, doc/experiments.md): test = {100927
+mortar arc, 124735 grenade line}.  Each test recording is novel in a
+single dimension (100927: unseen recording, geometry seen; 124735:
+unseen line geometry, class seen), so test results decompose into
+cross-recording vs cross-geometry generalisation.  The previous E02
+default (105856 + 124735) put every line recording in test and every
+arc recording in train -- geometry fully confounded with the split,
+which is why E04/E05 collapsed (aim-mode arcs hold the target at a
+near-constant range row while line flybys sweep it across the image;
+see doc/logs/2026-10-31-e05-test-ap-zero-diagnosis.md).  The bomb
 appears in a single sample recording so test cannot cover it -- the
-full dataset has no such restriction).
+full dataset has no such restriction.
 """
 
 from __future__ import annotations
@@ -58,8 +67,10 @@ from ..paired_format import PairedData, read_paired, write_paired
 
 __all__ = ["convert", "DEFAULT_TEST_RECORDINGS"]
 
-# sample.7z default: mortar + grenade go to test, bomb stays in train
-DEFAULT_TEST_RECORDINGS = ("2023-09-21_105856", "2023-09-21_124735")
+# E07 split (2026-10-31): arcs 180722+123500 and line 105856 in train,
+# arc 100927 + line 124735 in test -- each test recording novel in one
+# dimension only; superseded the E02 default (105856+124735)
+DEFAULT_TEST_RECORDINGS = ("2023-09-21_100927", "2023-09-21_124735")
 
 _REC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}$")
 _FRAME_RE = re.compile(r"^\d{4}$")

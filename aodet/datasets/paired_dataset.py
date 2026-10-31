@@ -24,7 +24,7 @@ override exists for quick scans).
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 from mmdet.registry import DATASETS
@@ -53,6 +53,13 @@ class PairedSonarCameraDataset(BaseDataset):
             AOSampleDegLevel transform overrides it per-sample for training.
         sonar_zero_centred: whether the sonar image bearing axis is 0°-
             centred (sync flips are only legal when True, §4.4(2)).
+        sonar_gt_sources: which sonar annotation ``source`` values to
+            train on ("blob" = measured echo, "projected" = calibrated
+            geometry).  Default keeps both; restrict to ("blob",) when
+            the projected boxes' calibration error is not yet
+            acceptable -- frames left without sonar boxes become
+            negative samples, so this trades label noise for occasional
+            false negatives.
     """
 
     def __init__(self,
@@ -61,12 +68,14 @@ class PairedSonarCameraDataset(BaseDataset):
                  camera_off: bool = False,
                  deg_level: Optional[str] = None,
                  sonar_zero_centred: bool = True,
+                 sonar_gt_sources: Sequence[str] = ("blob", "projected"),
                  pipeline: Optional[list] = None,
                  **kwargs):
         self.split = split
         self.camera_off = camera_off
         self.fixed_deg_level = deg_level
         self.sonar_zero_centred = sonar_zero_centred
+        self.sonar_gt_sources = tuple(sonar_gt_sources)
         # BaseDataset will call load_data_list; data_root must be set first
         kwargs.setdefault("data_prefix", dict(img=data_root))
         super().__init__(pipeline=pipeline or [], **kwargs)
@@ -87,6 +96,9 @@ class PairedSonarCameraDataset(BaseDataset):
                 continue
             level = self.fixed_deg_level or str(
                 sample["meta"].get("deg_level", "d0"))
+            # annotations without a source tag (hand labels) always pass
+            son_anns = [a for a in sample["sonar_annotations"]
+                        if a.get("source", "blob") in self.sonar_gt_sources]
             data_list.append(dict(
                 sample_id=sample["sample_id"],
                 fp_camera=os.path.join(root, sample["camera_file"])
@@ -98,9 +110,9 @@ class PairedSonarCameraDataset(BaseDataset):
                 boxes_camera=[a["bbox"] for a in sample["camera_annotations"]],
                 labels_camera=[by_cat_cam[a["category_id"]] for a in
                                sample["camera_annotations"]],
-                boxes_sonar=[a["bbox"] for a in sample["sonar_annotations"]],
+                boxes_sonar=[a["bbox"] for a in son_anns],
                 labels_sonar=[by_cat_son[a["category_id"]] for a in
-                              sample["sonar_annotations"]],
+                              son_anns],
                 deg_level=level,
                 deg_seed=int(sample["meta"].get("deg_seed", 0)),
                 meta=dict(sample["meta"]),

@@ -258,3 +258,55 @@ def test_calibrate_needs_min_frames():
     obs, _ = _synth_tank(n=30)
     with pytest.raises(ValueError):
         up.calibrate("short", obs[:5], min_frames=20)
+
+
+def test_anchor_b_rng_recovers_range_offset():
+    """E05 regression: a b_rng the degeneracy let slide into P shows up
+    as a systematic (blob_row - projected_row) offset; the anchor must
+    put it back in one median step, exactly (predict's row is affine in
+    b_rng)."""
+    obs, truth = _synth_tank(arc=False, aim=False)
+    calib = up.calibrate("synthetic", obs, min_frames=20)
+    from dataclasses import replace as _replace
+    biased = _replace(calib, b_rng=calib.b_rng - 0.30)  # the slide
+    drow = [abs(up.predict(biased, o)[0] - o.blob[0])
+            for o in obs if o.blob is not None]
+    assert np.median(drow) > 0.25 / obs[0].dr * 0.5     # visibly off
+    fixed, stats = up.anchor_b_rng(biased, obs)
+    assert stats["n_anchor"] >= 10
+    assert abs(fixed.b_rng - calib.b_rng) < 0.03        # recovered
+    drow = [abs(up.predict(fixed, o)[0] - o.blob[0])
+            for o in obs if o.blob is not None]
+    assert max(drow) < 4.0                              # rows, as calibrated
+
+
+def test_anchor_b_rng_keeps_b_when_no_blobs():
+    """Too few bearing-gated blobs: b_rng must pass through untouched."""
+    obs, _ = _synth_tank(arc=False, aim=False, n=40)
+    calib = up.calibrate("synthetic", obs, min_frames=20)
+    stripped = [type(o)(frame_idx=o.frame_idx, sample_id=o.sample_id,
+                        gantry=o.gantry, window_start=o.window_start,
+                        sample_period=o.sample_period,
+                        soundspeed=o.soundspeed) for o in obs[:5]]
+    for o in stripped:
+        o.cam_ray, o.category_id, o.blob = None, 3, None
+    fixed, stats = up.anchor_b_rng(calib, stripped)
+    assert fixed is calib and stats["n_anchor"] == 0
+    assert stats["b_rng_after"] == stats["b_rng_before"]
+
+
+def test_calib_cache_roundtrip():
+    """tools/project_uxo_sonar.py cache helpers: a serialised ->
+    deserialised CalibResult must reproduce predict() bit-for-bit."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "project_uxo_sonar",
+        os.path.join(os.path.dirname(up.__file__), "..", "..", "..",
+                     "tools", "project_uxo_sonar.py"))
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    obs, _ = _synth_tank(arc=False, aim=False)
+    calib = up.calibrate("synthetic", obs, min_frames=20)
+    back = tool._calib_from_dict(tool._calib_to_dict(calib))
+    for o in obs[:10]:
+        assert np.allclose(up.predict(calib, o), up.predict(back, o))

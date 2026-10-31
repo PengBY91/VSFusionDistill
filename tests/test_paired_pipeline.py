@@ -146,3 +146,30 @@ def test_dinf_drop_path(tmp_path):
     # sonar side untouched
     assert item["img_sonar"] is not None
     assert item["data_samples_camera"] is None
+
+
+def test_sonar_gt_sources_filter(tmp_path):
+    """E05: sonar_gt_sources=("blob",) drops projected sonar boxes from
+    training targets; camera annotations are untouched."""
+    root = str(tmp_path / "paired")
+    _make_toy_paired(root, n=4)
+    import json as _json
+    p = os.path.join(root, "sonar.json")
+    with open(p) as f:
+        sonar = _json.load(f)
+    # half the frames keep measured echoes, half become projected
+    for i, a in enumerate(sonar["annotations"]):
+        a["source"] = "blob" if i % 2 == 0 else "projected"
+    with open(p, "w") as f:
+        _json.dump(sonar, f)
+
+    ds = PairedSonarCameraDataset(
+        data_root=root, split="train", sonar_gt_sources=("blob",),
+        pipeline=[])
+    assert all(len(d["boxes_sonar"]) == (1 if i % 2 == 0 else 0)
+               for i, d in enumerate(ds.load_data_list()))
+    assert all(len(d["boxes_camera"]) == 1
+               for d in ds.load_data_list())
+    ds_all = PairedSonarCameraDataset(
+        data_root=root, split="train", pipeline=[])
+    assert all(len(d["boxes_sonar"]) == 1 for d in ds_all.load_data_list())

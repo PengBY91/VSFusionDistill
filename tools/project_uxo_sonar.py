@@ -61,6 +61,30 @@ def _contact_sheet(paired_root, entries, cam_bbox, dst, n=12):
         print(f"contact sheet -> {dst}")
 
 
+def _calib_to_dict(calib) -> dict:
+    """Serialise a CalibResult (numpy fields -> lists) for the cache."""
+    return dict(recording=calib.recording, yaw_sign=calib.yaw_sign,
+                circle_centre=calib.circle_centre.tolist(),
+                phi_ref=calib.phi_ref, yaw_span_deg=calib.yaw_span_deg,
+                R_cam0=calib.R_cam0.tolist(), R_son0=calib.R_son0.tolist(),
+                P=calib.P.tolist(), b_rng=calib.b_rng,
+                n_cam=calib.n_cam, n_sonar=calib.n_sonar,
+                rms_cam_deg=calib.rms_cam_deg, rms_az_deg=calib.rms_az_deg,
+                rms_rng_m=calib.rms_rng_m)
+
+
+def _calib_from_dict(d: dict):
+    from aodet.datasets.converters.uxo_projection import CalibResult
+    return CalibResult(
+        recording=d["recording"], yaw_sign=d["yaw_sign"],
+        circle_centre=np.asarray(d["circle_centre"]), phi_ref=d["phi_ref"],
+        yaw_span_deg=d["yaw_span_deg"], R_cam0=np.asarray(d["R_cam0"]),
+        R_son0=np.asarray(d["R_son0"]), P=np.asarray(d["P"]),
+        b_rng=d["b_rng"], n_cam=d["n_cam"], n_sonar=d["n_sonar"],
+        rms_cam_deg=d["rms_cam_deg"], rms_az_deg=d["rms_az_deg"],
+        rms_rng_m=d["rms_rng_m"])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--paired", default="data/paired/uxo")
@@ -69,10 +93,15 @@ def main():
                     help="write sonar.json + pairs.csv (default: dry run)")
     ap.add_argument("--contact-sheet", type=int, default=0,
                     help="write projection_check.jpg with N sampled rows")
+    ap.add_argument("--use-cache", action="store_true",
+                    help="load cached calibrations from projection_calib.json "
+                         "instead of re-running calibrate() (~10 min per "
+                         "recording); the cache is (re)written every run")
     args = ap.parse_args()
 
     from aodet.datasets.converters.uxo_projection import (
-        calibrate, load_observations, project_uxo_sonar)
+        CalibResult, anchor_b_rng, calibrate, load_observations,
+        project_uxo_sonar)
     from aodet.datasets.paired_format import PairedData, write_paired
 
     with open(os.path.join(args.paired, "camera.json")) as f:
@@ -82,11 +111,27 @@ def main():
     son_img_of_sample = {r["sample_id"]: int(r["sonar_image_id"])
                          for r in frame_meta}
 
+    cache_path = os.path.join(args.paired, "projection_calib.json")
+    cache = {}
+    if args.use_cache and os.path.exists(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            cache = json.load(f)
+        print(f"calibrations from cache -> {cache_path}")
+
     recs = load_observations(args.paired)
     report, all_entries, obs_by_sample = {}, {}, {}
     for rec in sorted(recs):
         obs = recs[rec]
-        calib = calibrate(rec, obs, min_frames=args.min_frames)
+        anchor = None
+        if rec in cache:
+            calib = _calib_from_dict(cache[rec])
+        else:
+            calib = calibrate(rec, obs, min_frames=args.min_frames)
+            # E05 fix: move the range-offset the (P_radial, b_rng)
+            # degeneracy leaked into P back into b_rng, anchored on the
+            # bearing-gated blob frames (see anchor_b_rng docstring)
+            calib, anchor = anchor_b_rng(calib, obs)
+            cache[rec] = _calib_to_dict(calib)
         entries = project_uxo_sonar(args.paired, calib, obs)
         all_entries.update(entries)
         for o in obs:
@@ -99,6 +144,7 @@ def main():
                for s in ("blob", "projected")}
         n_target = sum(1 for o in obs if o.category_id is not None)
         report[rec] = dict(
+            anchor=anchor,
             yaw_sign=calib.yaw_sign,
             yaw_span_deg=round(calib.yaw_span_deg, 1),
             circle_centre=[round(float(v), 3) for v in calib.circle_centre],
@@ -128,6 +174,11 @@ def main():
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"report -> {out_json}")
+
+    if not args.use_cache:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+        print(f"calib cache ({len(cache)} recordings) -> {cache_path}")
 
     if args.contact_sheet:
         ann_of_img = {a["image_id"]: a["bbox"]

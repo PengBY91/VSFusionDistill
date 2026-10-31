@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-FIELDS = ["run", "branch", "level", "AP", "AP50", "AP75", "AP_small",
+FIELDS = ["run", "branch", "level", "gt", "AP", "AP50", "AP75", "AP_small",
           "AP_medium", "AP_large", "AR@100"]
 
 
@@ -40,14 +40,19 @@ def main():
         with open(summary) as f:
             for r in json.load(f):
                 row = dict(run=run)
-                row.update({k: r.get(k) for k in FIELDS if k != "run"})
-                rows[(run, r["branch"], r["level"])] = row
+                # (0.0 is a valid AP; only a missing gt defaults to "all")
+                row.update({k: (r[k] if k in r else
+                                ("all" if k == "gt" else None))
+                            for k in FIELDS if k != "run"})
+                rows[(run, r["branch"], r["level"], row["gt"])] = row
 
     # merge with existing csv (same key -> overwrite)
     if os.path.exists(args.out):
         with open(args.out, newline="") as f:
             for row in csv.DictReader(f):
-                key = (row["run"], row["branch"], row["level"])
+                key = (row["run"], row["branch"], row["level"],
+                       row.get("gt") or "all")
+                row["gt"] = key[3]
                 if key not in rows:
                     rows[key] = row
 

@@ -48,6 +48,13 @@ train_dataloader = dict(
         data_root=data_root,
         split="train",
         sonar_zero_centred=True,
+        # E07: sonar heads train on gated visible-echo boxes only.
+        # Projected-source boxes mark no-gated-echo frames by construction
+        # (check_gt_validity 2026-10-31: projected contrast +0.1..+7 vs
+        # blob +12..+51; stripe peak does not track the projection).
+        # Frames left without sonar GT stay in the batch as honest
+        # background samples (camera supervision unaffected).
+        sonar_gt_sources=("blob",),
         pipeline=train_pipeline,
     ),
 )

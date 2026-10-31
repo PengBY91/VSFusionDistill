@@ -52,7 +52,7 @@ from __future__ import annotations
 import csv
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -567,6 +567,52 @@ def calibrate(recording: str, obs: List[FrameObs],
 # --------------------------------------------------------------------------
 # projection / GT generation
 # --------------------------------------------------------------------------
+def anchor_b_rng(calib: CalibResult,
+                 obs: List[FrameObs]) -> Tuple[CalibResult, Dict]:
+    """Re-anchor ``b_rng`` on azimuth-gated blob frames (E05 fix).
+
+    The joint fit's ``(P_radial, b_rng)`` degeneracy (flat range profile
+    when the target sits near the arc centre) lets a systematic range
+    offset migrate into ``P`` while the ``_SIG_B_PRIOR`` prior holds
+    ``b_rng`` near zero.  ``predict()`` then lands every projection row
+    off by that offset, and the ``_GATE_RNG`` gate demotes the true echo
+    frames to ``projected`` -- so the gate's own statistics never see
+    the bias (observed on the 105856/124735 test recordings: ~0.3 m row
+    offset, blob pass-rate 40%/28%, sonar test AP ~ 0 while the same
+    checkpoint scores AP50 0.8 on the train split).
+
+    Freezing everything else and taking the median
+    ``(blob_row - projected_row) * dr`` over blob frames that pass only
+    the bearing gate moves that offset back into ``b_rng``, the one
+    parameter ``predict()`` applies to the range axis.  The bearing-only
+    gate is deliberate: the range gate would reject exactly the frames
+    that carry the signal (circular).  ``predict()``'s row is affine in
+    ``b_rng`` and its column is independent of it, so a one-shot median
+    correction is exact; the median also shrugs off band-locked blob
+    mispicks that happen to share the bearing.
+    """
+    deltas = []
+    for o in obs:
+        if o.blob is None or o.category_id is None:
+            continue
+        row_p, col_p = predict(calib, o)
+        if abs(o.blob[1] - col_p) > _GATE_COL:
+            continue
+        deltas.append((o.blob[0] - row_p) * o.dr)
+    stats = dict(n_anchor=0, delta_m=0.0, b_rng_before=round(calib.b_rng, 4),
+                 b_rng_after=round(calib.b_rng, 4), anchor_iqr_m=0.0)
+    if len(deltas) < 10:
+        stats["note"] = "too few bearing-gated blobs; b_rng unchanged"
+        return calib, stats
+    delta = float(np.median(deltas))
+    new_b = float(np.clip(calib.b_rng + delta, -_B_RNG_MAX, _B_RNG_MAX))
+    stats.update(n_anchor=len(deltas), delta_m=round(delta, 4),
+                 b_rng_after=round(new_b, 4),
+                 anchor_iqr_m=round(float(np.percentile(deltas, 75)
+                                           - np.percentile(deltas, 25)), 4))
+    return replace(calib, b_rng=new_b), stats
+
+
 def predict(calib: CalibResult, o: FrameObs) -> Tuple[float, float]:
     """Projected (row_c, col_c) of the calibrated target in frame o."""
     Rz = _frame_yaw(calib.yaw_sign, o.gantry, calib.circle_centre,

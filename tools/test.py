@@ -100,7 +100,8 @@ def main():
     dl_cfg.shuffle = False
     root = dl_cfg.dataset.data_root
 
-    from aodet.evaluation.per_branch_metric import evaluate_prediction_file
+    from aodet.evaluation.per_branch_metric import (
+        evaluate_prediction_file, filter_gt_sources)
 
     summary = {}
     for level in args.levels:
@@ -138,17 +139,25 @@ def main():
             path = os.path.join(out_dir, f"pred.{branch}.{level}.json")
             with open(path, "w") as f:
                 json.dump(to_coco_results(samples, cat_maps[side]), f)
-            m = evaluate_prediction_file(
-                os.path.join(root, f"{side}.json"), path,
-                img_ids=img_ids[side])
-            summary[(branch, level)] = m
-            print(f"[{branch} @ {level}] AP={m['AP']:.4f} "
-                  f"AP50={m['AP50']:.4f} AR@100={m['AR@100']:.4f}")
+            with open(os.path.join(root, f"{side}.json")) as f:
+                gt = json.load(f)
+            variants = [("all", gt)]
+            if side == "sonar":
+                # E05: projected boxes carry the calibration range-axis
+                # error; the blob-only subset is the clean reference
+                variants.append(("blob", filter_gt_sources(gt, ("blob",))))
+            for gt_name, gt_v in variants:
+                m = evaluate_prediction_file(gt_v, path,
+                                             img_ids=img_ids[side])
+                summary[(branch, level, gt_name)] = m
+                tag = f" gt={gt_name}" if gt_name != "all" else ""
+                print(f"[{branch} @ {level}{tag}] AP={m['AP']:.4f} "
+                      f"AP50={m['AP50']:.4f} AR@100={m['AR@100']:.4f}")
 
     # machine-readable summary next to the prediction files
     with open(os.path.join(args.out_dir, "ap_summary.json"), "w") as f:
-        json.dump([{"branch": b, "level": lv, **m}
-                   for (b, lv), m in sorted(summary.items())], f, indent=2)
+        json.dump([{"branch": b, "level": lv, "gt": g, **m}
+                   for (b, lv, g), m in sorted(summary.items())], f, indent=2)
 
 
 if __name__ == "__main__":
