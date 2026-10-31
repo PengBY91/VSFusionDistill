@@ -16,8 +16,21 @@ the camera branch receives no frame, so every camera decision is a
 miss by construction -- exactly the collapse the table is meant to
 show.
 
+Scope (review 2026-10-31 §4.1):
+* only frames of ``--split`` are paired (predictions exist only for the
+  evaluated split; unpredicted frames used to enter as forced
+  double misses and inflate phi / Delta P_miss);
+* sonar GT is restricted to ``--sonar-gt-sources`` (default blob, the
+  training GT); frames whose sonar GT is filtered out leave the table;
+* one row per (level, sonar branch): the fused and the uncoupled sonar
+  heads are both reported (F2 张力 1 bookkeeping);
+* thresholds come from ``--tau-json`` ({branch: tau}, chosen on a
+  validation split at 1 false alarm / image, F2 §6.4); without it the
+  fixed ``--tau`` is used and the row says so (``tau_source``).
+
     python tools/correlation_table.py <run_dir> --paired data/paired/uxo \
-        [--levels d0 d1 d2 d3 d4 dinf] [--out run_dir/correlation.csv]
+        [--split test] [--levels d0 d1 d2 d3 d4 dinf] \
+        [--tau-json val_taus.json] [--out run_dir/correlation.csv]
 """
 
 import argparse
@@ -56,6 +69,19 @@ def _load(p):
         return json.load(f)
 
 
+def _one_per_image(anns):
+    """image_id -> annotation; the matched-pair logic assumes one target
+    per frame (true for UXO), so a second annotation is an error."""
+    by = {}
+    for a in anns:
+        if a["image_id"] in by:
+            raise ValueError(f"image {a['image_id']} has more than one "
+                             "annotation; matched pairs assume one "
+                             "target per frame")
+        by[a["image_id"]] = a
+    return by
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("run_dir", help="directory with pred.<branch>.<level>.json")
@@ -63,19 +89,41 @@ def main():
     ap.add_argument("--levels", nargs="+",
                     default=["d0", "d1", "d2", "d3", "d4", "dinf"])
     ap.add_argument("--tau", type=float, default=0.25,
-                    help="existence score threshold")
+                    help="fallback existence score threshold")
+    ap.add_argument("--tau-json", default=None,
+                    help="validation-chosen {branch: tau} thresholds")
+    ap.add_argument("--split", default="test",
+                    help="frame_meta split to pair ('all' = no filter)")
+    ap.add_argument("--recordings", nargs="+", default=None,
+                    help="also restrict to these frame_meta recordings "
+                         "(LOO-CV folds)")
+    ap.add_argument("--sonar-gt-sources", nargs="+", default=["blob"],
+                    help="sonar annotation sources kept as GT")
     ap.add_argument("--iou-thr", type=float, default=0.5)
     ap.add_argument("--out", default=None,
                     help="output csv (default <run_dir>/correlation.csv)")
     args = ap.parse_args()
     args.out = args.out or os.path.join(args.run_dir, "correlation.csv")
 
+    from aodet.evaluation.branch_correlation import summarize_matched_pairs
+    from aodet.evaluation.per_branch_metric import filter_gt_sources
+
     camera = _load(os.path.join(args.paired, "camera.json"))
-    sonar = _load(os.path.join(args.paired, "sonar.json"))
-    gt_cam = {a["image_id"]: a for a in camera["annotations"]}
-    gt_son = {a["image_id"]: a for a in sonar["annotations"]}
+    sonar = filter_gt_sources(_load(os.path.join(args.paired, "sonar.json")),
+                              tuple(args.sonar_gt_sources))
+    gt_cam = _one_per_image(camera["annotations"])
+    gt_son = _one_per_image(sonar["annotations"])
     with open(os.path.join(args.paired, "frame_meta.csv"), newline="") as f:
         frames = [dict(r) for r in csv.DictReader(f)]
+    if args.split != "all":
+        if frames and "split" not in frames[0]:
+            raise SystemExit("frame_meta.csv has no 'split' column; pass "
+                             "--split all to pair every frame explicitly")
+        frames = [fr for fr in frames if fr["split"] == args.split]
+    if args.recordings:
+        keep = set(args.recordings)
+        frames = [fr for fr in frames if fr.get("recording") in keep]
+    taus = _load(args.tau_json) if args.tau_json else {}
 
     rows = []
     for level in args.levels:
@@ -88,34 +136,44 @@ def main():
                     by_img.setdefault(d["image_id"], []).append(d)
                 preds[branch] = by_img
         cam_b = next((b for b in CAMERA_BRANCHES if b in preds), None)
-        son_b = next((b for b in SONAR_BRANCHES if b in preds), None)
-        if cam_b is None or son_b is None:
+        son_bs = [b for b in SONAR_BRANCHES if b in preds]
+        if cam_b is None or not son_bs:
             print(f"[{level}] skipped (need one camera and one sonar "
                   f"branch; found {sorted(preds)})")
             continue
 
-        miss_c, miss_s, conf_c, conf_s = [], [], [], []
-        for fr in frames:
-            cam_id = int(fr["camera_image_id"])
-            son_id = int(fr["sonar_image_id"])
-            if cam_id not in gt_cam or son_id not in gt_son:
-                continue                     # no GT on both sides -> no pair
-            gca, gsa = gt_cam[cam_id], gt_son[son_id]
-            hit_c, hc = _decide(preds[cam_b].get(cam_id, []),
-                                gca["bbox"], gca["category_id"],
-                                args.tau, args.iou_thr)
-            hit_s, hs = _decide(preds[son_b].get(son_id, []),
-                                gsa["bbox"], gsa["category_id"],
-                                args.tau, args.iou_thr)
-            miss_c.append(1.0 - hit_c)
-            miss_s.append(1.0 - hit_s)
-            conf_c.append(hc)
-            conf_s.append(hs)
-
-        from aodet.evaluation.branch_correlation import summarize_matched_pairs
-        rep = summarize_matched_pairs(miss_c, miss_s, conf_c, conf_s)
-        rows.append(dict(level=level, camera_branch=cam_b, sonar_branch=son_b,
-                         **rep.as_row()))
+        for son_b in son_bs:
+            tau_c = float(taus.get(cam_b, args.tau))
+            tau_s = float(taus.get(son_b, args.tau))
+            miss_c, miss_s, conf_c, conf_s = [], [], [], []
+            for fr in frames:
+                cam_id = int(fr["camera_image_id"])
+                son_id = int(fr["sonar_image_id"])
+                if cam_id not in gt_cam or son_id not in gt_son:
+                    continue                 # no GT on both sides -> no pair
+                gca, gsa = gt_cam[cam_id], gt_son[son_id]
+                hit_c, hc = _decide(preds[cam_b].get(cam_id, []),
+                                    gca["bbox"], gca["category_id"],
+                                    tau_c, args.iou_thr)
+                hit_s, hs = _decide(preds[son_b].get(son_id, []),
+                                    gsa["bbox"], gsa["category_id"],
+                                    tau_s, args.iou_thr)
+                miss_c.append(1.0 - hit_c)
+                miss_s.append(1.0 - hit_s)
+                conf_c.append(hc)
+                conf_s.append(hs)
+            if not miss_c:
+                print(f"[{level}/{son_b}] no matched pairs in split "
+                      f"{args.split!r}; skipped")
+                continue
+            rep = summarize_matched_pairs(miss_c, miss_s, conf_c, conf_s)
+            rows.append(dict(
+                level=level, split=args.split, camera_branch=cam_b,
+                sonar_branch=son_b,
+                sonar_gt=",".join(args.sonar_gt_sources),
+                tau_camera=tau_c, tau_sonar=tau_s,
+                tau_source="val" if args.tau_json else "fixed",
+                **rep.as_row()))
 
     if rows:
         with open(args.out, "w", newline="") as f:
@@ -123,7 +181,7 @@ def main():
             w.writeheader()
             w.writerows(rows)
         for r in rows:
-            print(f"[{r['level']}] n={r['n_pairs']} "
+            print(f"[{r['level']}/{r['sonar_branch']}] n={r['n_pairs']} "
                   f"phi={r['phi']:+.3f} (CI {r['phi_ci95'][0]:+.3f},"
                   f"{r['phi_ci95'][1]:+.3f}) "
                   f"dP_miss={r['delta_p_miss']:+.3f} "

@@ -20,4 +20,6 @@ model = dict(
     fused_sonar_head=None,
     # _delete_: replace the base CrossAttnFusion dict, not merge into it
     fusion=dict(type="NoneFusion", _delete_=True),
+    # B0's single sonar head carries the full sonar supervision weight
+    loss_weights=dict(uncoupled_sonar=1.0),
 )

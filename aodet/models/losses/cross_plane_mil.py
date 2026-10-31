@@ -7,7 +7,14 @@ provides no range, so the only geometrically honest correspondence is
 is therefore multiple-instance: for a teacher box ``b_c`` with objectness
 ``p^T_obj(b_c)``, mapped through M₀ to an azimuth window ``W(b_c)``::
 
-    L_xp = Σ_{b_c} BCE( max_{(r,θ) ∈ W(b_c)} p_s^obj(r, θ),  p^T_obj(b_c) )
+    L_xp = Σ_{b_c} −p^T_obj(b_c) · log( softmax_{(r,θ) ∈ W(b_c)} p_s^obj(r, θ) )
+
+i.e. only the positive half of BCE(p_max, p^T).  The full BCE pulls the
+sonar peak *down* whenever it exceeds the camera teacher's confidence (a
+clear echo at 0.95 against a 0.7 camera box), which is negative evidence
+in disguise (review 2026-10-31 §3.6a).  "softmax" is the mean of the top-k
+cells of the window: a hard max sends gradient to a single (early on,
+random) cell.
 
 Only **positive evidence** is transferred: the camera's vertical FOV does
 not cover the sonar's, so a camera non-detection says nothing about the
@@ -20,11 +27,20 @@ The student objectness is read from one feature level of the sonar head
 (default: level 0 = highest resolution, stride 8).  The sonar image is the
 rectangular polar map (x = bearing, ascending; y = range) fixed by the
 paired-format convention; the bearing axis of the feature grid is x.
+Bearing → column goes through ``bearing_to_col_norm`` when given (ARIS
+beams are non-uniform in angle: use aodet.geometry.aris_beam_table); the
+linear map over ``bearing_fov_deg`` is only right for uniform-beam sonars.
+
+Known limitation (review §3.6d): M₀ is an affine map of normalised camera
+x and ignores lens distortion and the camera–sonar baseline; at UXO's
+~1 m ranges the parallax makes the bearing correspondence range-dependent.
+The calibrated per-frame ray-curve variant is future work.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+import math
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -49,6 +65,9 @@ class CrossPlaneMILLoss(torch.nn.Module):
         level: which multi-level objectness map to supervise (default 0).
         bearing_axis: 'x' per the paired-format convention ('y' kept for
             the fan-image option deferred by TODO 14.3).
+        bearing_to_col_norm: optional callable θ[deg] -> normalised column
+            coordinate in [0, 1]; overrides the linear map.
+        topk: cells averaged as the soft max over a window.
     """
 
     def __init__(
@@ -59,6 +78,8 @@ class CrossPlaneMILLoss(torch.nn.Module):
         base_margin_deg: float = 1.0,
         level: int = 0,
         bearing_axis: str = "x",
+        bearing_to_col_norm: Optional[Callable[[float], float]] = None,
+        topk: int = 4,
     ):
         super().__init__()
         self.m0 = m0
@@ -66,6 +87,8 @@ class CrossPlaneMILLoss(torch.nn.Module):
         self.k_margin = k_margin
         self.base_margin_deg = base_margin_deg
         self.level = level
+        self.bearing_to_col_norm = bearing_to_col_norm
+        self.topk = int(topk)
         if bearing_axis != "x":
             raise NotImplementedError(
                 "fan-shaped sonar images (bearing on rays) are the deferred "
@@ -77,6 +100,7 @@ class CrossPlaneMILLoss(torch.nn.Module):
         teacher_obj: Sequence[Tensor],
         student_obj_logits: Sequence[Tensor],
         camera_img_w: float,
+        reach: Optional[Sequence[Tensor]] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Compute the loss.
 
@@ -89,41 +113,52 @@ class CrossPlaneMILLoss(torch.nn.Module):
                 student's sonar head (sigmoid applied here).
             camera_img_w: width of the (augmented) camera image the teacher
                 saw — needed because M₀ works on normalized camera x.
+            reach: optional per image, tensor of reachability weights
+                (F2 §5.4) for those boxes.
 
         Returns:
-            (loss, n_used): mean BCE over usable boxes and the count
+            (loss, n_used): mean positive-only BCE over usable boxes and
+            the count
             (windows fully outside the sonar FOV are skipped and counted).
         """
         logits = student_obj_logits[self.level]
         probs = logits.sigmoid()  # B,1,H,W
         b, _, h, w = probs.shape
         theta_lo, theta_hi = -self.bearing_fov_deg / 2, self.bearing_fov_deg / 2
-        # bearing -> feature column (rectangular polar: x ascending bearing)
-        col = lambda th: (th - theta_lo) / (theta_hi - theta_lo) * (w - 1)
+        if self.bearing_to_col_norm is not None:
+            to_norm = self.bearing_to_col_norm
+        else:
+            # uniform-beam assumption (x ascending bearing)
+            to_norm = lambda th: (th - theta_lo) / (theta_hi - theta_lo)
 
         losses: List[Tensor] = []
         n_used = 0
-        n_skip = 0
         for i, (boxes, objs) in enumerate(zip(teacher_boxes, teacher_obj)):
             if len(boxes) == 0:
                 continue
-            for (x1, y1, x2, y2), p_t in zip(boxes, objs.tolist()):
+            r_i = reach[i].tolist() if reach is not None else None
+            for j, ((x1, y1, x2, y2), p_t) in enumerate(
+                    zip(boxes, objs.tolist())):
                 window = azimuth_window(x1, x2, camera_img_w, self.m0,
                                         k_margin=self.k_margin,
                                         base_margin_deg=self.base_margin_deg)
                 clip = window_fov_overlap(window, self.m0)
                 if clip is None:
-                    n_skip += 1
                     continue
-                c1 = max(int(col(clip[0])), 0)
-                c2 = min(int(col(clip[1])) + 1, w)
+                a = float(to_norm(clip[0])) * (w - 1)
+                b_ = float(to_norm(clip[1])) * (w - 1)
+                c1 = max(int(math.floor(min(a, b_))), 0)
+                c2 = min(int(math.ceil(max(a, b_))) + 1, w)
                 if c2 <= c1:
-                    n_skip += 1
                     continue
-                p_max = probs[i, 0, :, c1:c2].max()
-                losses.append(F.binary_cross_entropy(
-                    p_max.clamp(1e-6, 1 - 1e-6),
-                    probs.new_tensor(float(p_t))))
+                strip = probs[i, 0, :, c1:c2].flatten()
+                k = min(self.topk, strip.numel())
+                p_soft = strip.topk(k).values.mean().clamp(1e-6, 1 - 1e-6)
+                # positive half of BCE only: never pulls the sonar peak down
+                term = -float(p_t) * torch.log(p_soft)
+                if r_i is not None:
+                    term = term * float(r_i[j])
+                losses.append(term)
                 n_used += 1
         if n_used == 0:
             return probs.sum() * 0.0, probs.new_tensor(0.0)

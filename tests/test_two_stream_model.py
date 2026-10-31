@@ -218,3 +218,182 @@ def test_cross_plane_mil_loss():
     # empty batch -> zero loss, zero used
     loss0, n0 = crit([[]], [torch.tensor([])], [obj], camera_img_w=320)
     assert n0.item() == 0 and loss0.item() == 0.0
+
+
+# -- review 2026-10-31 regressions ----------------------------------------
+
+def _kd_student(**kd):
+    sbb, snc, shd = _stream_cfg()
+    teacher_cfg = dict(
+        type="TwoStreamYOLOX",
+        sonar_backbone=sbb, sonar_neck=snc,
+        camera_backbone=_stream_cfg()[0], camera_neck=_stream_cfg()[1],
+        camera_head=_stream_cfg()[2], uncoupled_sonar_head=shd)
+    cfg = dict(teacher=teacher_cfg, teacher_input="clear",
+               obj_weight=1.0, score_weight=0.0)
+    cfg.update(kd)
+    return _model(fusion=dict(type="CrossAttnFusion",
+                              cam_channels=[64, 64, 64],
+                              sonar_channels=[64, 64, 64], embed_dim=64,
+                              num_heads=4),
+                  distillation=cfg)
+
+
+def test_kd_loss_reaches_student_gradients():
+    """§1.1: KD terms must survive mmengine's parse_losses (keys need
+    "loss") and produce gradients in the student."""
+    student = _kd_student(score_weight=0.5)
+    data = _batch(b=2, with_clear=True)
+    inputs, samples = _prep(student, data, training=True)
+    student.train()
+    losses = student.loss(inputs, samples)
+    _, log_vars = student.parse_losses(losses)
+    kd_keys = [k for k in log_vars if k.startswith("kd/")]
+    assert kd_keys and all("loss" in k for k in kd_keys), kd_keys
+    # routes: camera, fused sonar and the uncoupled sonar head (§3.3)
+    for b in ("camera", "sonar", "sonar_uncoupled"):
+        assert f"kd/loss_{b}_obj" in losses, list(losses)
+    student.zero_grad()
+    sum(v for k, v in losses.items() if k.startswith("kd/")).backward()
+    g = sum(float(p.grad.abs().sum())
+            for n, p in student.named_parameters()
+            if p.requires_grad and p.grad is not None
+            and not n.startswith("teacher."))
+    assert g > 0
+    assert all(p.grad is None for p in student.teacher.parameters())
+
+
+def test_feature_kd_and_reach():
+    student = _kd_student(feat_weight=1.0, student_feat_channels=[64] * 3,
+                          teacher_feat_channels=[64] * 3,
+                          reach=dict(k=10.0, theta=0.3))
+    data = _batch(b=2, with_clear=True)
+    inputs, samples = _prep(student, data, training=True)
+    student.train()
+    losses = student.loss(inputs, samples)
+    assert "kd/loss_sonar_feat" in losses
+    losses["kd/loss_sonar_feat"].backward()
+    assert student.kd_adapters[0].weight.grad is not None
+
+
+def test_detection_losses_unchanged_by_single_forward():
+    """§1.6: the single-forward loss() matches head.loss() term by term."""
+    torch.manual_seed(0)
+    model = _model(fusion=dict(type="NoneFusion"))
+    model.train()
+    data = _batch(b=2)
+    inputs, samples = _prep(model, data, training=True)
+    losses = model.loss(inputs, samples)
+    son = model.extract_sonar_feat(inputs["sonar"])
+    ref = model.uncoupled_sonar_head.loss(son, samples["sonar"])
+    for k, v in ref.items():
+        torch.testing.assert_close(
+            losses[f"uncoupled_sonar/{k}"],
+            v * model.loss_weights["uncoupled_sonar"])
+
+
+@pytest.mark.parametrize("fusion", [
+    dict(type="CrossAttnFusion", cam_channels=[16], sonar_channels=[16],
+         embed_dim=16, num_heads=2, layer_scale_init=0.5),
+    dict(type="BearingAxialFusion", cam_channels=[16], sonar_channels=[16],
+         embed_dim=16, num_heads=2, layer_scale_init=0.5),
+    dict(type="ConcatFusion", cam_channels=[16], sonar_channels=[16],
+         out_channels=16),
+])
+def test_fusion_dinf_train_test_consistent(fusion):
+    """§2.1: a masked sample (camera_valid False, training with black
+    frames) and a dropped camera (test) give the same fused features."""
+    from aodet.models.fusion import build_fusion
+    f = build_fusion(fusion).eval()
+    son = [torch.randn(2, 16, 6, 5)]
+    cam = [torch.randn(2, 16, 8, 7)]   # unregistered, different size
+    masked = f(cam, son, camera_valid=torch.tensor([False, False]))
+    dropped = f(None, son)
+    torch.testing.assert_close(masked[0], dropped[0])
+    mixed = f(cam, son, camera_valid=torch.tensor([True, False]))
+    torch.testing.assert_close(mixed[0][1], dropped[0][1])
+    if fusion["type"] != "ConcatFusion":
+        assert not torch.allclose(mixed[0][0], dropped[0][0])
+
+
+def test_cross_attn_zero_layer_scale_is_sonar_only():
+    from aodet.models.fusion import CrossAttnFusion
+    f = CrossAttnFusion([16], [16], embed_dim=16, num_heads=2)
+    son, cam = [torch.randn(1, 16, 4, 4)], [torch.randn(1, 16, 4, 4)]
+    torch.testing.assert_close(f(cam, son)[0], f(None, son)[0])
+
+
+def test_cross_attn_is_position_aware():
+    """§2.2: with positional encodings, permuting camera tokens changes
+    the fused output (a pure content attention would be invariant)."""
+    from aodet.models.fusion import CrossAttnFusion
+    torch.manual_seed(0)
+    f = CrossAttnFusion([16], [16], embed_dim=16, num_heads=2,
+                        layer_scale_init=1.0).eval()
+    son = [torch.randn(1, 16, 4, 4)]
+    cam = torch.randn(1, 16, 4, 4)
+    perm = cam.flatten(2)[:, :, torch.randperm(16)].reshape(1, 16, 4, 4)
+    assert not torch.allclose(f([cam], son)[0], f([perm], son)[0])
+
+
+def test_bearing_attn_geometry_bias_shapes():
+    from aodet.models.fusion import BearingAxialFusion
+    f = BearingAxialFusion([16], [16], embed_dim=16, num_heads=2,
+                           layer_scale_init=1.0,
+                           sonar_col_bearing=lambda x: (x - 0.5) * 30.0,
+                           camera_col_bearing=lambda x: (x - 0.5) * 90.0)
+    out = f([torch.randn(2, 16, 8, 12)], [torch.randn(2, 16, 6, 5)])
+    assert out[0].shape == (2, 16, 6, 5)
+    out[0].sum().backward()
+    assert f.log_sigma.grad is not None
+
+
+def test_frozen_teacher_rejects_mismatched_checkpoint(tmp_path):
+    """§3.5: a key mismatch must raise instead of leaving random weights."""
+    from aodet.models.teachers.frozen_teacher import FrozenTeacher
+    sbb, snc, shd = _stream_cfg()
+    tcfg = dict(type="TwoStreamYOLOX", sonar_backbone=sbb, sonar_neck=snc,
+                uncoupled_sonar_head=shd)
+    src = TwoStreamYOLOX(**{k: v for k, v in tcfg.items() if k != "type"})
+    good = tmp_path / "good.pth"
+    torch.save({"state_dict": src.state_dict()}, good)
+    t = FrozenTeacher(dict(teacher=tcfg, teacher_checkpoint=str(good)))
+    for (n, a), b in zip(src.state_dict().items(),
+                         t.model.state_dict().values()):
+        torch.testing.assert_close(a, b)
+    bad = tmp_path / "bad.pth"
+    torch.save({"state_dict": {f"model.{k}": v for k, v in
+                               src.state_dict().items()}}, bad)
+    with pytest.raises(RuntimeError, match="does not match"):
+        FrozenTeacher(dict(teacher=tcfg, teacher_checkpoint=str(bad)))
+
+
+def test_cross_plane_mil_is_one_sided():
+    """§3.6a: a sonar peak above the teacher's confidence is never pulled
+    down (gradient on the logits must not be positive)."""
+    m0 = M0Mapping(slope=30.75, intercept=-15.375, residual_std=0.5,
+                   camera_hfov_deg=30.75, sonar_fov_deg=30.75)
+    crit = CrossPlaneMILLoss(m0=m0, bearing_fov_deg=30.75, topk=1)
+    obj = torch.full((1, 1, 8, 10), -4.0)
+    obj[0, 0, 4, 5] = 4.0                       # p ≈ 0.98 > teacher 0.5
+    obj.requires_grad_(True)
+    loss, n = crit([[(140.0, 100.0, 180.0, 140.0)]], [torch.tensor([0.5])],
+                   [obj], camera_img_w=320)
+    assert n.item() == 1
+    loss.backward()
+    assert obj.grad[0, 0, 4, 5] <= 0             # descent raises the peak
+    assert (obj.grad <= 0).all()
+
+
+def test_cross_plane_mil_nonlinear_bearing_map():
+    m0 = M0Mapping(slope=30.75, intercept=-15.375, residual_std=0.1,
+                   camera_hfov_deg=30.75, sonar_fov_deg=30.75)
+    obj = torch.full((1, 1, 8, 10), -4.0)
+    obj[0, 0, 4, 0] = 4.0                        # peak at the left edge
+    # a map that sends bearing 0 to column 0: the window lands on the peak
+    crit = CrossPlaneMILLoss(m0=m0, bearing_fov_deg=30.75, topk=1,
+                             base_margin_deg=0.0,
+                             bearing_to_col_norm=lambda th: 0.0)
+    loss, _ = crit([[(150.0, 0.0, 170.0, 10.0)]], [torch.tensor([1.0])],
+                   [obj], camera_img_w=320)
+    assert loss.item() < 0.05

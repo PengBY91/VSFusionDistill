@@ -29,6 +29,7 @@ from mmdet.structures import DetDataSample, SampleList
 from mmengine.config import ConfigDict
 from mmdet.registry import MODELS as DET_MODELS
 from mmdet.models.detectors import BaseDetector
+from mmdet.models.utils import unpack_gt_instances
 
 from aodet.models.fusion import build_fusion
 
@@ -39,12 +40,6 @@ def _unpack(data_samples, key: str) -> Optional[SampleList]:
     if data_samples is None:
         return None
     return data_samples.get(key)
-
-
-def _gt_and_metas(samples: Optional[SampleList]):
-    """Heads take the DetDataSample list itself (mmdet>=3.3 API); kept as a
-    pass-through so the call sites read uniformly."""
-    return samples
 
 
 @DET_MODELS.register_module()
@@ -61,12 +56,22 @@ class TwoStreamYOLOX(BaseDetector):
         fusion: dict building one of aodet.models.fusion.* (or None for
             NoneFusion).
         loss_weights: optional per-head loss weights, e.g.
-            dict(camera=1.0, fused_sonar=1.0, uncoupled_sonar=1.0).
+            dict(camera=1.0, fused_sonar=0.5, uncoupled_sonar=0.5).  The
+            two sonar heads share the sonar backbone, so their weights
+            should sum to B0's single sonar-head weight (review 2026-10-31
+            §1.3).
+        fusion_detach_sonar: stop-grad variant — the fusion module sees
+            detached sonar features, so the sonar backbone is trained by
+            sonar-only supervision and the uncoupled head is independent
+            of the camera at training time too (review §2.3).
         distillation: optional dict for the frozen teacher:
-            dict(teacher=<model cfg or None if checkpoint-only>,
-                 teacher_checkpoint=<path>,
+            dict(teacher=<model cfg>, teacher_checkpoint=<path>,
                  teacher_input='clear'|'degraded',
-                 obj_weight=..., cls_weight=..., xp_weight=..., tau=...).
+                 routes={student branch: teacher branch},
+                 obj_weight=..., score_weight=..., bg_floor=...,
+                 feat_weight=..., student_feat_channels=[...],
+                 teacher_feat_channels=[...],
+                 reach=dict(k=..., theta=...) or None).
     """
 
     def __init__(
@@ -80,6 +85,7 @@ class TwoStreamYOLOX(BaseDetector):
         uncoupled_sonar_head: Optional[dict] = None,
         fusion: Optional[dict] = None,
         loss_weights: Optional[dict] = None,
+        fusion_detach_sonar: bool = False,
         distillation: Optional[dict] = None,
         train_cfg: Optional[dict] = None,
         test_cfg: Optional[dict] = None,
@@ -127,11 +133,19 @@ class TwoStreamYOLOX(BaseDetector):
                                  uncoupled_sonar=1.0)
         if loss_weights:
             self.loss_weights.update(loss_weights)
+        self.fusion_detach_sonar = fusion_detach_sonar
 
         self.distillation_cfg = distillation
         self.teacher = None
+        self.kd_adapters = None
         if distillation:
             self._init_teacher(distillation)
+            if float(distillation.get("feat_weight", 0.0)) > 0:
+                s_ch = distillation["student_feat_channels"]
+                t_ch = distillation["teacher_feat_channels"]
+                # train-only adapters (not part of the deployed student)
+                self.kd_adapters = nn.ModuleList(
+                    [nn.Conv2d(a, b, 1) for a, b in zip(s_ch, t_ch)])
 
     # -- teacher -----------------------------------------------------------
     def _init_teacher(self, cfg: dict) -> None:
@@ -155,70 +169,101 @@ class TwoStreamYOLOX(BaseDetector):
         return self.extract_sonar_feat(batch_inputs["sonar"])
 
     # -- mmdet API ----------------------------------------------------------
+    # branch name -> (GT side, loss_weights key, head attribute)
+    _BRANCHES = {
+        "camera": ("camera", "camera", "camera_head"),
+        "sonar": ("sonar", "fused_sonar", "fused_sonar_head"),
+        "sonar_uncoupled": ("sonar", "uncoupled_sonar",
+                            "uncoupled_sonar_head"),
+    }
+
+    def _fuse(self, cam_feats, son_feats, camera_valid=None):
+        if self.fusion_detach_sonar:
+            son_feats = [f.detach() for f in son_feats]
+        return self.fusion(cam_feats, son_feats, camera_valid=camera_valid)
+
+    @staticmethod
+    def _det_loss(head, outs, samples) -> dict:
+        gts, metas, ignores = unpack_gt_instances(samples)
+        return head.loss_by_feat(*outs, gts, metas, ignores)
+
     def loss(self, batch_inputs: Dict[str, torch.Tensor],
              batch_data_samples: Dict[str, SampleList]) -> dict:
         losses: Dict[str, torch.Tensor] = {}
         cam_imgs = batch_inputs.get("camera")
         son_imgs = batch_inputs["sonar"]
-        clear_imgs = batch_inputs.get("camera_clear")
+        cam_valid = batch_inputs.get("camera_valid")
 
         son_feats = self.extract_sonar_feat(son_imgs)
         cam_feats = (self.extract_camera_feat(cam_imgs)
                      if cam_imgs is not None else None)
 
-        head_jobs = []
+        # every head runs exactly once; detection and KD share these
+        # outputs (review 2026-10-31 §1.6)
+        outs: Dict[str, tuple] = {}
         if self.camera_head is not None and cam_feats is not None:
-            # at D∞-drop the whole batch loses the camera stream: the
-            # camera head has nothing to regress on, skip its loss
-            head_jobs.append(("camera", self.camera_head, cam_feats,
-                              _unpack(batch_data_samples, "camera")))
+            # at a whole-batch D∞ drop the camera head has nothing to
+            # regress on; at D∞-zero its GT is empty (honest negatives)
+            outs["camera"] = self.camera_head(cam_feats)
         if self.uncoupled_sonar_head is not None:
-            head_jobs.append(("uncoupled_sonar", self.uncoupled_sonar_head,
-                              son_feats,
-                              _unpack(batch_data_samples, "sonar")))
+            outs["sonar_uncoupled"] = self.uncoupled_sonar_head(son_feats)
         if self.fused_sonar_head is not None:
-            fused = self.fusion(cam_feats, son_feats)
-            head_jobs.append(("fused_sonar", self.fused_sonar_head, fused,
-                              _unpack(batch_data_samples, "sonar")))
+            outs["sonar"] = self.fused_sonar_head(
+                self._fuse(cam_feats, son_feats, cam_valid))
 
-        for name, head, feats, samples in head_jobs:
-            # mmdet>=3.3 heads consume batch_data_samples directly
-            head_losses = head.loss(feats, _gt_and_metas(samples))
-            w = self.loss_weights.get(name, 1.0)
+        for name, o in outs.items():
+            side, wkey, attr = self._BRANCHES[name]
+            head_losses = self._det_loss(getattr(self, attr), o,
+                                         _unpack(batch_data_samples, side))
+            w = self.loss_weights.get(wkey, 1.0)
             for k, v in head_losses.items():
-                losses[f"{name}/{k}"] = v * w
+                losses[f"{wkey}/{k}"] = v * w
 
         if self.teacher is not None and self.training:
-            losses.update(self._kd_losses(batch_inputs, cam_feats, son_feats,
-                                          clear_imgs))
-
+            losses.update(self._kd_losses(batch_inputs, outs, son_feats,
+                                          cam_valid))
         return losses
 
-    def _kd_losses(self, batch_inputs, cam_feats, son_feats,
-                   clear_imgs) -> dict:
-        """Online frozen-teacher distillation losses (§4.4(4): online first)."""
-        from aodet.models.losses.branch_kd import branch_kd_losses
+    def _kd_losses(self, batch_inputs, outs, son_feats, cam_valid) -> dict:
+        """Online frozen-teacher distillation losses (§4.4(4): online first).
 
-        t_in = clear_imgs if (self.distillation_cfg.get("teacher_input",
-                                                        "clear") == "clear"
-                              and clear_imgs is not None) else \
+        Every returned key contains "loss": mmengine's parse_losses only
+        sums such keys, and the earlier "kd/<branch>/obj" names were logged
+        but never back-propagated (review 2026-10-31 §1.1).
+        """
+        from aodet.models.losses.branch_kd import (branch_kd_losses,
+                                                    feature_kd_loss)
+        cfg = self.distillation_cfg
+        clear = batch_inputs.get("camera_clear")
+        t_in = clear if (cfg.get("teacher_input", "clear") == "clear"
+                         and clear is not None) else \
             batch_inputs.get("camera")
         with torch.no_grad():
-            t_out = self.teacher.forward_head_outputs(
-                camera=t_in, sonar=batch_inputs["sonar"])
+            t_out, t_feats = self.teacher.forward_head_outputs(
+                camera=t_in, sonar=batch_inputs["sonar"], return_feats=True)
 
-        s_out = {}
-        if self.camera_head is not None and t_out.get("camera") is not None \
-                and cam_feats is not None:
-            s_out["camera"] = self.camera_head(cam_feats)
-        if self.fused_sonar_head is not None and t_out.get("sonar") is not None:
-            fused = self.fusion(cam_feats, son_feats)
-            s_out["sonar"] = self.fused_sonar_head(fused)
-        elif self.uncoupled_sonar_head is not None and t_out.get("sonar") is not None:
-            s_out["sonar"] = self.uncoupled_sonar_head(son_feats)
+        valid = {}
+        if cam_valid is not None:
+            valid["camera"] = cam_valid     # no camera KD on D∞ samples
+        reach = None
+        rcfg = cfg.get("reach")
+        if rcfg and "sonar_uncoupled" in t_out:
+            # F2 §5.4 reachability: the teacher's SONAR-ONLY head decides
+            # whether a target is visible in sonar (review §3.4)
+            k = float(rcfg.get("k", 10.0))
+            theta = float(rcfg.get("theta", 0.3))
+            reach = [torch.sigmoid(k * (o.sigmoid() - theta))
+                     for o in t_out["sonar_uncoupled"][2]]
+        kd = branch_kd_losses(outs, t_out, cfg=cfg, valid=valid, reach=reach)
+        losses = {f"kd/loss_{k}": v for k, v in kd.items()}
 
-        kd = branch_kd_losses(s_out, t_out, cfg=self.distillation_cfg)
-        return {f"kd/{k}": v for k, v in kd.items()}
+        fw = float(cfg.get("feat_weight", 0.0))
+        if fw > 0 and self.kd_adapters is not None \
+                and "sonar" in t_out:
+            fg = [o.sigmoid() for o in t_out["sonar"][2]]
+            losses["kd/loss_sonar_feat"] = fw * feature_kd_loss(
+                son_feats, t_feats["sonar_fused"], self.kd_adapters, fg=fg)
+        return losses
 
     def predict(self, batch_inputs: Dict[str, torch.Tensor],
                 batch_data_samples: Dict[str, SampleList],
@@ -226,6 +271,7 @@ class TwoStreamYOLOX(BaseDetector):
         """Per-branch predictions; returns a dict (our tools consume it)."""
         son_imgs = batch_inputs["sonar"]
         cam_imgs = batch_inputs.get("camera")
+        cam_valid = batch_inputs.get("camera_valid")
 
         son_feats = self.extract_sonar_feat(son_imgs)
         cam_feats = (self.extract_camera_feat(cam_imgs)
@@ -245,7 +291,7 @@ class TwoStreamYOLOX(BaseDetector):
                 self.uncoupled_sonar_head, son_feats,
                 _unpack(batch_data_samples, "sonar"), rescale)
         if self.fused_sonar_head is not None:
-            fused = self.fusion(cam_feats, son_feats)
+            fused = self._fuse(cam_feats, son_feats, cam_valid)
             out["sonar"] = self._branch_predict(
                 self.fused_sonar_head, fused,
                 _unpack(batch_data_samples, "sonar"), rescale)

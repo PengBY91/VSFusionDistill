@@ -8,13 +8,13 @@ check: 100927 blob AP50 >= 0.1 vs E07's 0.000).
 
 _base_ = "s0_b0_sonar_only_yoloxs.py"
 
-# same order as the base train pipeline with the jitter inserted right
-# after loading (it operates in on-disk sonar geometry, before resize)
 train_pipeline = [
     dict(type="AOLoadPaired"),
-    dict(type="AOSonarScaleJitter", scale_range=(0.6, 1.8), prob=1.0),
     dict(type="AOPairedResize",
          camera_size=(640, 640), sonar_size=(640, 640), keep_ratio=False),
+    # after the resize: a fixed-size resize placed after the jitter undoes
+    # it exactly (review 2026-10-31 §1.2)
+    dict(type="AOSonarScaleJitter", scale_range=(0.6, 1.8), prob=1.0),
     dict(type="AOPairedSyncFlip", prob=0.0, allow=True),
     dict(type="AOSampleDegLevel"),
     dict(type="AOStudentCameraView", dinf_mode="zero", jitter=0.08),

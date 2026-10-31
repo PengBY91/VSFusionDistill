@@ -21,7 +21,7 @@ import sys
 
 import numpy as np
 import torch
-from mmengine.config import Config
+from mmengine.config import Config, DictAction
 from mmengine.registry import init_default_scope
 from mmengine.runner import Runner, load_checkpoint
 
@@ -68,9 +68,14 @@ def main():
                         default=["d0", "d1", "d2", "d3", "d4", "dinf"])
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
                         else "cpu")
+    parser.add_argument(
+        "--cfg-options", nargs="+", action=DictAction, default=None,
+        help="override config keys, e.g. the LOO-CV recording filter")
     args = parser.parse_args()
 
     cfg = Config.fromfile(args.config)
+    if args.cfg_options:
+        cfg.merge_from_dict(args.cfg_options)
     init_default_scope(cfg.get("default_scope", "mmdet"))
     install_nms_cpu_fallback()
     out_dir = args.out_dir
@@ -101,7 +106,7 @@ def main():
     root = dl_cfg.dataset.data_root
 
     from aodet.evaluation.per_branch_metric import (
-        evaluate_prediction_file, filter_gt_sources)
+        blob_eval_img_ids, evaluate_prediction_file, filter_gt_sources)
 
     summary = {}
     for level in args.levels:
@@ -141,14 +146,14 @@ def main():
                 json.dump(to_coco_results(samples, cat_maps[side]), f)
             with open(os.path.join(root, f"{side}.json")) as f:
                 gt = json.load(f)
-            variants = [("all", gt)]
+            variants = [("all", gt, img_ids[side])]
             if side == "sonar":
-                # E05: projected boxes carry the calibration range-axis
-                # error; the blob-only subset is the clean reference
-                variants.append(("blob", filter_gt_sources(gt, ("blob",))))
-            for gt_name, gt_v in variants:
-                m = evaluate_prediction_file(gt_v, path,
-                                             img_ids=img_ids[side])
+                # blob view: measured echoes only; projected-only frames
+                # are excluded, not turned into negatives (review §4.2)
+                variants.append(("blob", filter_gt_sources(gt, ("blob",)),
+                                 blob_eval_img_ids(gt, img_ids[side])))
+            for gt_name, gt_v, ids in variants:
+                m = evaluate_prediction_file(gt_v, path, img_ids=ids)
                 summary[(branch, level, gt_name)] = m
                 tag = f" gt={gt_name}" if gt_name != "all" else ""
                 print(f"[{branch} @ {level}{tag}] AP={m['AP']:.4f} "

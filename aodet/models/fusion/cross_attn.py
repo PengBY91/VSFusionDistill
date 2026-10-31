@@ -3,13 +3,26 @@
 F2 Q4 asks whether this mechanism drags the sonar branch down when the
 camera degrades.  RSFusionDet is unpublished, so this is a clean-room
 implementation of the direction (Sonar2RGB: sonar features attend to camera
-features), not a reproduction of their deformable operator:
+features), not a reproduction of their deformable operator::
 
-    fused_l = son_l + MultiHeadAttention(q=son_l, k=v=cam_l)
+    q_l     = proj_s(son_l)
+    fused_l = q_l + γ_l · MHA(LN(q_l) + PE_s, LN(c_l) + PE_c, c_l)
 
-per feature level, with camera features bilinearly aligned to the sonar
-grid.  Under D∞ the camera features become garbage and the residual path is
-exactly the mechanism whose damage RQ-0 measures.
+per feature level (review 2026-10-31 §2.1–§2.2):
+
+* **2D sine positional encodings** on both sides — without them the
+  attention output is invariant to the order of the camera tokens, so a
+  sonar location can only see a bag of camera content and can never learn
+  a column↔bearing correspondence.
+* **γ (per-channel LayerScale), zero-initialised by default**: the fused
+  head starts identical to a sonar-only head and coupling is learned.
+* **No LayerNorm on the residual output**, so "no camera" is exactly
+  ``fused = q``.  The D∞ drop path (``cam_feats is None``) and the masked
+  training path (``camera_valid[i] == False``) are the same function — the
+  previous version trained D∞ on black frames through attention + LN and
+  tested it on an un-normalised projection the head had never seen.
+* Camera features are **not** resampled to the sonar grid: the planes are
+  unregistered and attention does not need equal sizes.
 """
 
 import math
@@ -20,6 +33,24 @@ from torch import Tensor
 from typing import List, Optional
 
 
+def sine_pe_2d(h: int, w: int, dim: int, device, dtype) -> Tensor:
+    """(h*w, dim) 2D sine positional encoding (DETR-style, normalised)."""
+    if dim % 4:
+        raise ValueError(f"embed dim {dim} must be divisible by 4")
+    d = dim // 4
+    omega = 1.0 / (10000 ** (torch.arange(d, device=device,
+                                          dtype=torch.float32) / d))
+    ys = (torch.arange(h, device=device, dtype=torch.float32) + 0.5) / h
+    xs = (torch.arange(w, device=device, dtype=torch.float32) + 0.5) / w
+    ay = ys[:, None] * omega[None] * 2 * math.pi
+    ax = xs[:, None] * omega[None] * 2 * math.pi
+    py = torch.cat([ay.sin(), ay.cos()], 1)                  # h, 2d
+    px = torch.cat([ax.sin(), ax.cos()], 1)                  # w, 2d
+    pe = torch.cat([py[:, None, :].expand(h, w, 2 * d),
+                    px[None, :, :].expand(h, w, 2 * d)], -1)
+    return pe.reshape(h * w, dim).to(dtype)
+
+
 class CrossAttnFusion(nn.Module):
     def __init__(
         self,
@@ -28,42 +59,55 @@ class CrossAttnFusion(nn.Module):
         embed_dim: int = 128,
         num_heads: int = 4,
         dropout: float = 0.0,
+        layer_scale_init: float = 0.0,
+        pos_embed: bool = True,
     ):
         super().__init__()
         assert len(cam_channels) == len(sonar_channels)
         self.levels = len(cam_channels)
+        self.pos_embed = pos_embed
         self.cam_proj = nn.ModuleList(
             [nn.Conv2d(c, embed_dim, 1) for c in cam_channels])
         self.sonar_proj = nn.ModuleList(
             [nn.Conv2d(c, embed_dim, 1) for c in sonar_channels])
+        self.norm_q = nn.ModuleList(
+            [nn.LayerNorm(embed_dim) for _ in cam_channels])
+        self.norm_kv = nn.ModuleList(
+            [nn.LayerNorm(embed_dim) for _ in cam_channels])
         self.attn = nn.ModuleList([
             nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout,
                                   batch_first=True)
             for _ in cam_channels
         ])
-        self.norm = nn.ModuleList(
-            [nn.LayerNorm(embed_dim) for _ in cam_channels])
+        self.gamma = nn.ParameterList([
+            nn.Parameter(torch.full((embed_dim,), float(layer_scale_init)))
+            for _ in cam_channels])
 
     def forward(
-        self, cam_feats: Optional[List[Tensor]], son_feats: List[Tensor]
+        self,
+        cam_feats: Optional[List[Tensor]],
+        son_feats: List[Tensor],
+        camera_valid: Optional[Tensor] = None,
     ) -> List[Tensor]:
+        qs = [proj(sf) for proj, sf in zip(self.sonar_proj, son_feats)]
         if cam_feats is None:
-            # D∞ fallback: no camera features at all.  The fused head then
-            # sees the sonar features alone through the same projection as
-            # the attention queries — i.e. the residual branch with the
-            # attention term zeroed.  Channels match the normal path
-            # (embed_dim), so the head stays valid.
-            return [proj(sf) for proj, sf in zip(self.sonar_proj,
-                                                 son_feats)]
+            # D∞ drop: identical to the masked path (attention term = 0)
+            return qs
         out: List[Tensor] = []
-        for i, (cf, sf) in enumerate(zip(cam_feats, son_feats)):
-            b, _, h, w = sf.shape
-            if cf.shape[-2:] != sf.shape[-2:]:
-                cf = nn.functional.interpolate(
-                    cf, size=(h, w), mode="bilinear", align_corners=False)
-            q = self.sonar_proj[i](sf).flatten(2).transpose(1, 2)  # B,HW,E
-            kv = self.cam_proj[i](cf).flatten(2).transpose(1, 2)  # B,HW,E
-            attended, _ = self.attn[i](q, kv, kv, need_weights=False)
-            fused = self.norm[i](q + attended)                    # residual
-            out.append(fused.transpose(1, 2).reshape(b, -1, h, w))
+        for i, (cf, q) in enumerate(zip(cam_feats, qs)):
+            b, e, h, w = q.shape
+            kv = self.cam_proj[i](cf)
+            hc, wc = kv.shape[-2:]
+            q_tok = q.flatten(2).transpose(1, 2)                  # B,HW,E
+            kv_tok = kv.flatten(2).transpose(1, 2)                # B,HcWc,E
+            qn = self.norm_q[i](q_tok)
+            kn = self.norm_kv[i](kv_tok)
+            if self.pos_embed:
+                qn = qn + sine_pe_2d(h, w, e, q.device, qn.dtype)
+                kn = kn + sine_pe_2d(hc, wc, e, q.device, kn.dtype)
+            att, _ = self.attn[i](qn, kn, kv_tok, need_weights=False)
+            att = att * self.gamma[i]
+            if camera_valid is not None:
+                att = att * camera_valid.to(att.dtype)[:, None, None]
+            out.append((q_tok + att).transpose(1, 2).reshape(b, e, h, w))
         return out

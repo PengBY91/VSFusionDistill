@@ -17,5 +17,6 @@ class NoneFusion(nn.Module):
         self,
         cam_feats: Optional[List[Tensor]],
         son_feats: List[Tensor],
+        camera_valid: Optional[Tensor] = None,
     ) -> List[Tensor]:
         return son_feats

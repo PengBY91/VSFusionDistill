@@ -11,7 +11,8 @@ logic.
 
 D∞-drop mode: the dataset may omit camera images entirely ("drop" rather
 than "zero"); then ``inputs['camera']`` is None and the detector skips the
-camera stream for that batch.
+camera stream for that batch.  D∞-zero mode keeps the black frame in the
+batch and marks it with ``inputs['camera_valid'][i] = False``.
 """
 
 from __future__ import annotations
@@ -77,6 +78,12 @@ class PairedDataPreprocessor(DetDataPreprocessor):
         inputs["sonar"] = _opt("img_sonar")
         inputs["camera"] = _opt("img_camera")
         inputs["camera_clear"] = _opt("img_camera_clear")
+        # per-sample "camera carries signal" flag (False at D∞); the fusion
+        # module zeroes its camera term and the camera KD skips the sample
+        cv = data.get("camera_valid")
+        inputs["camera_valid"] = (
+            torch.as_tensor([bool(v) for v in cv], device=self.device)
+            if cv is not None and inputs["camera"] is not None else None)
 
         samples: Dict[str, List[DetDataSample]] = {}
         for key in ("camera", "sonar"):

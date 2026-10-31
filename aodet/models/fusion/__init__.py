@@ -3,7 +3,10 @@
 Interface: every fusion module maps two multi-level neck feature lists to
 one fused multi-level list used by the fused sonar head::
 
-    fused = fusion(cam_feats, son_feats)   # each: list[Tensor B,C,H,W]
+    fused = fusion(cam_feats, son_feats, camera_valid=None)
+    # feats: list[Tensor B,C,H,W]; camera_valid: optional (B,) bool —
+    # False marks samples without camera signal (D∞), whose camera term
+    # must vanish exactly as when cam_feats is None
 
 RSFusionDet's CAFusion is unpublished, so the cross-attention variant here is
 a faithful *directional* implementation of the mechanism F2 Q4 asks about —
@@ -20,14 +23,17 @@ sonar_channels=[128, 256, 512]) for a YOLOX-S × YOLOX-S pair.
 from .none_fusion import NoneFusion
 from .concat import ConcatFusion
 from .cross_attn import CrossAttnFusion
+from .bearing_attn import BearingAxialFusion
 
 _FUSION_TYPES = {
     "NoneFusion": NoneFusion,
     "ConcatFusion": ConcatFusion,
     "CrossAttnFusion": CrossAttnFusion,
+    "BearingAxialFusion": BearingAxialFusion,
 }
 
-__all__ = ["NoneFusion", "ConcatFusion", "CrossAttnFusion", "build_fusion"]
+__all__ = ["NoneFusion", "ConcatFusion", "CrossAttnFusion",
+           "BearingAxialFusion", "build_fusion"]
 
 
 def build_fusion(cfg: dict = None):

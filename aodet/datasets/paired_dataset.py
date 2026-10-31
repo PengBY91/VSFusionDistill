@@ -60,6 +60,11 @@ class PairedSonarCameraDataset(BaseDataset):
             acceptable -- frames left without sonar boxes become
             negative samples, so this trades label noise for occasional
             false negatives.
+        recordings / exclude_recordings: optional whitelist / blacklist
+            of frame_meta ``recording`` values, applied after the split
+            filter.  Used by the recording-level leave-one-out protocol
+            (tools/run_loocv.sh; review 2026-10-31 §4.3) with
+            ``split=None``.
     """
 
     def __init__(self,
@@ -69,6 +74,8 @@ class PairedSonarCameraDataset(BaseDataset):
                  deg_level: Optional[str] = None,
                  sonar_zero_centred: bool = True,
                  sonar_gt_sources: Sequence[str] = ("blob", "projected"),
+                 recordings: Optional[Sequence[str]] = None,
+                 exclude_recordings: Optional[Sequence[str]] = None,
                  pipeline: Optional[list] = None,
                  **kwargs):
         self.split = split
@@ -76,6 +83,9 @@ class PairedSonarCameraDataset(BaseDataset):
         self.fixed_deg_level = deg_level
         self.sonar_zero_centred = sonar_zero_centred
         self.sonar_gt_sources = tuple(sonar_gt_sources)
+        self.recordings = (None if recordings is None
+                           else {str(r) for r in recordings})
+        self.exclude_recordings = {str(r) for r in exclude_recordings or ()}
         # BaseDataset will call load_data_list; data_root must be set first
         kwargs.setdefault("data_prefix", dict(img=data_root))
         super().__init__(pipeline=pipeline or [], **kwargs)
@@ -93,6 +103,11 @@ class PairedSonarCameraDataset(BaseDataset):
         data_list: List[dict] = []
         for sample in paired.samples():
             if self.split and sample["split"] != self.split:
+                continue
+            rec = str(sample["meta"].get("recording", ""))
+            if self.recordings is not None and rec not in self.recordings:
+                continue
+            if rec in self.exclude_recordings:
                 continue
             level = self.fixed_deg_level or str(
                 sample["meta"].get("deg_level", "d0"))

@@ -176,8 +176,8 @@ def test_sonar_gt_sources_filter(tmp_path):
 
 
 def test_sonar_scale_jitter_rows_and_boxes():
-    """E08: jitter rescales the sonar range axis and box y/h only;
-    camera stream and azimuth (x/w) stay fixed."""
+    """E08: jitter rescales the sonar range axis and box y/h only, on a
+    fixed canvas; camera stream and azimuth (x/w) stay fixed."""
     from aodet.datasets.transforms import AOSonarScaleJitter
     img_sonar = np.zeros((100, 50, 3), np.uint8)
     img_sonar[40:52, 20:30] = 255
@@ -186,13 +186,103 @@ def test_sonar_scale_jitter_rows_and_boxes():
     out = t.transform(dict(img_sonar=img_sonar.copy(),
                            img_camera=img_camera.copy(),
                            boxes_sonar=[[20.0, 40.0, 10.0, 12.0]],
+                           labels_sonar=[2],
                            boxes_camera=[[1.0, 2.0, 3.0, 4.0]]))
-    assert out["img_sonar"].shape[0] == 150      # 100 * 1.5 rows
-    assert out["img_sonar"].shape[1] == 50       # azimuth untouched
+    assert out["img_sonar"].shape == (100, 50, 3)   # canvas preserved
     assert out["img_camera"].shape == (30, 40, 3)
-    assert out["boxes_sonar"] == [[20.0, 60.0, 10.0, 18.0]]  # y/h only
+    (x, y, w, h), = out["boxes_sonar"]
+    assert (x, w) == (20.0, 10.0)                   # azimuth untouched
+    assert h == pytest.approx(18.0)                 # 12 * 1.5
+    assert 0.0 <= y and y + h <= 100.0              # box kept in window
+    rows = np.where(out["img_sonar"][:, 25, 0] > 127)[0]
+    assert rows.min() == pytest.approx(y, abs=1.5)
+    assert rows.max() + 1 == pytest.approx(y + h, abs=1.5)
+    assert out["labels_sonar"] == [2]
     assert out["boxes_camera"] == [[1.0, 2.0, 3.0, 4.0]]
     assert out["sonar_scale_jitter"] == 1.5
+
+
+def test_sonar_scale_jitter_shrink_pads():
+    from aodet.datasets.transforms import AOSonarScaleJitter
+    img = np.full((100, 50, 3), 9, np.uint8)
+    out = AOSonarScaleJitter(scale_range=(0.5, 0.5), pad_val=0).transform(
+        dict(img_sonar=img.copy(), boxes_sonar=[[1.0, 20.0, 3.0, 40.0]],
+             labels_sonar=[0]))
+    assert out["img_sonar"].shape == (100, 50, 3)
+    assert (out["img_sonar"][:, 0, 0] == 9).sum() == 50
+    assert out["boxes_sonar"][0][3] == pytest.approx(20.0)
+
+
+def test_scale_jitter_survives_full_train_pipeline():
+    """Review 2026-10-31 §1.2 regression: placed after the fixed-size
+    resize, the jitter must change the final box height (the first E08
+    config put it before the resize, which undid it exactly)."""
+    from mmcv.transforms import Compose as _Compose
+    img = np.zeros((441, 128, 3), np.uint8)
+    img[200:217, 60:70] = 255
+    heights = []
+    for f in (0.6, 1.8):
+        pipe = _Compose([
+            dict(type="AOPairedResize", sonar_size=(640, 640),
+                 keep_ratio=False),
+            dict(type="AOSonarScaleJitter", scale_range=(f, f)),
+        ])
+        out = pipe(dict(img_sonar=img.copy(), img_camera=None,
+                        boxes_sonar=[[60.0, 200.0, 10.0, 17.0]],
+                        labels_sonar=[0], boxes_camera=[]))
+        assert out["img_sonar"].shape[:2] == (640, 640)
+        heights.append(out["boxes_sonar"][0][3])
+    assert heights[1] / heights[0] == pytest.approx(1.8 / 0.6, rel=0.02)
+
+
+def test_e08_configs_jitter_after_resize():
+    from mmengine.config import Config
+    for path in ("configs/f2/e08_s0_b0_sonar_only_yoloxs.py",
+                 "configs/f2/e08_s0_cross_attn_yoloxs.py"):
+        types = [t["type"] for t in
+                 Config.fromfile(path).train_dataloader.dataset.pipeline]
+        assert types.index("AOSonarScaleJitter") > \
+            types.index("AOPairedResize"), (path, types)
+
+
+def test_dinf_clears_camera_gt_and_flags_sample():
+    """Review §1.5: a D∞ frame carries no camera target (black frame or
+    dropped); its camera GT is cleared and camera_valid is False."""
+    from aodet.datasets.transforms import AOStudentCameraView
+    for mode in ("zero", "drop"):
+        out = AOStudentCameraView(dinf_mode=mode).transform(dict(
+            img_camera=np.full((8, 8, 3), 128, np.uint8),
+            boxes_camera=[[1, 1, 3, 3]], labels_camera=[0],
+            deg_level="dinf", sample_id="x"))
+        assert out["boxes_camera"] == [] and out["labels_camera"] == []
+        assert out["camera_valid"] is False
+        assert out["img_camera_clear"].max() == 128  # teacher still sees
+        if mode == "zero":
+            assert out["img_camera"].max() == 0
+        else:
+            assert out["img_camera"] is None
+    out = AOStudentCameraView().transform(dict(
+        img_camera=np.full((8, 8, 3), 128, np.uint8),
+        boxes_camera=[[1, 1, 3, 3]], labels_camera=[0],
+        deg_level="d2", sample_id="x"))
+    assert out["camera_valid"] is True and len(out["boxes_camera"]) == 1
+
+
+def test_sample_deg_level_lazy_rng_follows_global_seed():
+    """Review §1.7: without an explicit seed, the level/seed draws derive
+    from the (worker-seeded) global numpy RNG, not a fixed seed 0."""
+    from aodet.datasets.transforms import AOSampleDegLevel
+
+    def draws(global_seed):
+        np.random.seed(global_seed)
+        t = AOSampleDegLevel()
+        return [(r["deg_level"], r["deg_seed"]) for r in
+                (t.transform({}) for _ in range(20))]
+
+    assert draws(1) == draws(1)
+    assert draws(1) != draws(2)
+    fixed = AOSampleDegLevel(seed=0, resample_deg_seed=False)
+    assert fixed.transform({"deg_seed": 7})["deg_seed"] == 7
 
 
 def test_sonar_scale_jitter_identity_paths():

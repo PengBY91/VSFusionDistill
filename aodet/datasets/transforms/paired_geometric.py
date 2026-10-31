@@ -136,49 +136,90 @@ class AOPairedSyncFlip(BaseTransform):
 
 @TRANSFORMS.register_module()
 class AOSonarScaleJitter(BaseTransform):
-    """Randomly rescale the sonar range axis (rows) only — train-side.
+    """Randomly rescale the sonar range axis (rows) on a FIXED canvas.
 
     E07/E08 motivation: apparent echo height drifts across recordings
     (100927 echoes are 12-17 px against a 22-39 px train support), and
     the box regression locks onto the train scale prior — localisation
     transfers, scale does not.  Jittering the row axis during training
-    broadens that prior.  The azimuth (column) axis, the camera stream
-    and every camera/sonar GT other than the sonar box y/h stay fixed:
-    cross-modal geometric consumers (M0 bearing windows) live in column
-    space, which this transform does not touch.  ``ori_shape_sonar``
-    deliberately keeps the on-disk file shape (same convention as
-    ``AOPairedResize``); the jitter is train-only and never runs in the
-    test pipeline where ori_shape drives prediction back-mapping.
+    broadens that prior.
+
+    **Must run after** ``AOPairedResize``: a fixed-size resize placed
+    after this transform rescales every image back to the same row count
+    and undoes the jitter exactly (review 2026-10-31 §1.2 — the first E08
+    config had this order and was a no-op).  The canvas keeps its (H, W):
+    f > 1 crops an H-row window (preferring one that keeps every box),
+    f < 1 pads with ``pad_val``.  Boxes are shifted and clipped; boxes
+    thinner than ``min_box_h`` after clipping are dropped with their
+    labels.  The azimuth (column) axis, the camera stream and the camera
+    GT stay fixed: cross-modal geometric consumers (M0 bearing windows)
+    live in column space, which this transform does not touch.  Train-only.
 
     Args:
-        scale_range: closed-ish range of the row rescale factor f,
-            drawn uniformly; (1, 1) disables the jitter.
+        scale_range: range of the row rescale factor f, drawn uniformly;
+            (1, 1) disables the jitter.
         prob: probability of applying the jitter at all.
+        pad_val: fill value for rows exposed when f < 1.
+        min_box_h: boxes shorter than this after clipping are dropped.
     """
 
-    def __init__(self, scale_range: tuple = (0.6, 1.8), prob: float = 1.0):
+    def __init__(self, scale_range: tuple = (0.6, 1.8), prob: float = 1.0,
+                 pad_val: int = 0, min_box_h: float = 2.0):
         super().__init__()
         if not 0 < scale_range[0] <= scale_range[1]:
             raise ValueError(f"invalid scale_range {scale_range}")
-        self.scale_range = scale_range
+        self.scale_range = tuple(scale_range)
         self.prob = prob
+        self.pad_val = pad_val
+        self.min_box_h = min_box_h
 
     def transform(self, results: dict) -> dict:
         img = results.get("img_sonar")
-        if img is None or self.prob <= 0 or self.scale_range == (1, 1):
-            results["sonar_scale_jitter"] = 1.0
+        results["sonar_scale_jitter"] = 1.0
+        if (img is None or self.prob <= 0 or self.scale_range == (1, 1)
+                or np.random.rand() > self.prob):
             return results
-        if np.random.rand() > self.prob:
-            results["sonar_scale_jitter"] = 1.0
-            return results
-        f = np.random.uniform(*self.scale_range)
+        f = float(np.random.uniform(*self.scale_range))
         h, w = img.shape[:2]
         new_h = max(1, int(round(h * f)))
-        results["img_sonar"] = cv2.resize(
-            img, (w, new_h), interpolation=cv2.INTER_LINEAR)
-        results["boxes_sonar"] = [
-            [b[0], b[1] * f, b[2], b[3] * f]
-            for b in (results.get("boxes_sonar") or [])
-        ]
+        if new_h == h:
+            return results
+        scaled = cv2.resize(img, (w, new_h), interpolation=cv2.INTER_LINEAR)
+        fy = new_h / h
+        boxes = [[b[0], b[1] * fy, b[2], b[3] * fy]
+                 for b in (results.get("boxes_sonar") or [])]
+
+        if new_h > h:
+            # crop an h-row window; keep every box when that is possible
+            lo, hi = 0, new_h - h
+            if boxes:
+                top = min(b[1] for b in boxes)
+                bot = max(b[1] + b[3] for b in boxes)
+                k_lo = max(0, int(np.ceil(bot - h)))
+                k_hi = min(new_h - h, int(np.floor(top)))
+                if k_lo <= k_hi:
+                    lo, hi = k_lo, k_hi
+            y0 = int(np.random.randint(lo, hi + 1))
+            out = np.ascontiguousarray(scaled[y0:y0 + h])
+            shift = -y0
+        else:
+            off = int(np.random.randint(0, h - new_h + 1))
+            out = np.full_like(img, self.pad_val)
+            out[off:off + new_h] = scaled
+            shift = off
+
+        labels = list(results.get("labels_sonar") or [])
+        kept_boxes, kept_labels = [], []
+        for i, b in enumerate(boxes):
+            y1 = max(b[1] + shift, 0.0)
+            y2 = min(b[1] + b[3] + shift, float(h))
+            if y2 - y1 >= self.min_box_h:
+                kept_boxes.append([b[0], y1, b[2], y2 - y1])
+                if i < len(labels):
+                    kept_labels.append(labels[i])
+        results["img_sonar"] = out
+        results["boxes_sonar"] = kept_boxes
+        if labels:
+            results["labels_sonar"] = kept_labels
         results["sonar_scale_jitter"] = f
         return results

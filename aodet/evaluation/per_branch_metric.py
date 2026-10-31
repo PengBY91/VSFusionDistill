@@ -26,6 +26,7 @@ __all__ = [
     "BRANCHES",
     "coco_ap",
     "filter_gt_sources",
+    "blob_eval_img_ids",
     "evaluate_prediction_file",
     "collect_ap_table",
 ]
@@ -107,6 +108,23 @@ def filter_gt_sources(gt: Dict[str, Any],
     anns = [a for a in gt.get("annotations", [])
             if a.get("source", "blob") in sources]
     return {**gt, "annotations": anns}
+
+
+def blob_eval_img_ids(gt: Dict[str, Any],
+                      img_ids: Iterable[int]) -> List[int]:
+    """Image ids for the ``gt=blob`` view: drop projected-only frames.
+
+    A projected-only frame has a physical target whose echo did not pass
+    the blob gate.  With its annotation removed but the image kept, every
+    detection there — including a correct one on a weak echo — would
+    count as a false positive (review 2026-10-31 §4.2).  Frames with a
+    blob annotation, and frames with no annotation at all (true
+    negatives), stay.
+    """
+    has_blob = {a["image_id"] for a in gt.get("annotations", [])
+                if a.get("source", "blob") == "blob"}
+    has_any = {a["image_id"] for a in gt.get("annotations", [])}
+    return [int(i) for i in img_ids if i in has_blob or i not in has_any]
 
 
 def evaluate_prediction_file(

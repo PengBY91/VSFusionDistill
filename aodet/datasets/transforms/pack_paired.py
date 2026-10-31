@@ -41,7 +41,9 @@ class AOSampleDegLevel(BaseTransform):
     _DEFAULT_PROBS = {"d0": 0.16, "d1": 0.16, "d2": 0.16, "d3": 0.16,
                       "d4": 0.16, "dinf": 0.20}
 
-    def __init__(self, probs: Optional[dict] = None, seed: int = 0):
+    def __init__(self, probs: Optional[dict] = None,
+                 seed: Optional[int] = None,
+                 resample_deg_seed: bool = True):
         super().__init__()
         p = dict(self._DEFAULT_PROBS)
         if probs:
@@ -50,13 +52,35 @@ class AOSampleDegLevel(BaseTransform):
         assert abs(total - 1.0) < 1e-6, f"probs must sum to 1, got {total}"
         self.levels = list(p)
         self.probs = np.asarray([p[k] for k in self.levels])
-        self.rng = np.random.default_rng(seed)
+        self.seed = seed
+        self.resample_deg_seed = resample_deg_seed
+        # created lazily inside the dataloader worker (review 2026-10-31
+        # §1.7): a generator built here would be copied into every worker
+        # with the same state, and would ignore the run seed
+        self._rng: Optional[np.random.Generator] = None
+
+    def _generator(self) -> np.random.Generator:
+        if self._rng is None:
+            if self.seed is not None:
+                # explicit seed: fully deterministic (unit tests)
+                self._rng = np.random.default_rng(self.seed)
+            else:
+                # mmengine's worker_init_fn seeds the global numpy RNG from
+                # (run seed, rank, worker id): deriving from it makes the
+                # level sequence differ across workers and training seeds
+                # while staying reproducible for a given run seed
+                self._rng = np.random.default_rng(np.random.randint(2 ** 31))
+        return self._rng
 
     def transform(self, results: dict) -> dict:
-        results["deg_level"] = str(self.rng.choice(self.levels, p=self.probs))
-        # per-sample draw seed: stays fixed per item so D0 and degraded
-        # draws of the same item pair up deterministically in analysis
-        results["deg_seed"] = int(results.get("deg_seed", 0))
+        rng = self._generator()
+        results["deg_level"] = str(rng.choice(self.levels, p=self.probs))
+        if self.resample_deg_seed:
+            # training: a fresh degradation-parameter draw every time the
+            # item is seen (test sets keep frame_meta's fixed deg_seed)
+            results["deg_seed"] = int(rng.integers(2 ** 31))
+        else:
+            results["deg_seed"] = int(results.get("deg_seed", 0))
         return results
 
 
@@ -78,9 +102,20 @@ class AOStudentCameraView(BaseTransform):
         level = results.get("deg_level", "d0")
         assert level in ALL_LEVELS
         results["img_camera_clear"] = img.copy()  # teacher view, clean
-        if level == "dinf" and self.dinf_mode == "drop":
-            results["img_camera"] = None
-            return results
+        if level == "dinf":
+            # D∞: nothing reaches the sensor, so there is no visible camera
+            # target.  Camera GT is cleared in BOTH modes so the camera head
+            # never learns to hallucinate boxes from position priors on
+            # black frames (review 2026-10-31 §1.5); ``camera_valid`` lets
+            # the fusion module and the camera KD mask this sample.
+            results["boxes_camera"] = []
+            results["labels_camera"] = []
+            results["camera_valid"] = False
+            if self.dinf_mode == "drop":
+                results["img_camera"] = None
+                return results
+        else:
+            results["camera_valid"] = True
         results["img_camera"] = degrade_camera(
             img, sample_id=results["sample_id"], level=level,
             seed=results.get("deg_seed", 0), jitter=self.jitter)
@@ -130,6 +165,7 @@ class AOPackPairedInputs(BaseTransform):
             deg_level=results.get("deg_level", "d0"),
             deg_seed=int(results.get("deg_seed", 0)),
             flip_applied=bool(results.get("flip_applied", False)),
+            camera_valid=bool(results.get("camera_valid", True)),
         )
         for name in ("sonar", "camera"):
             img, ds = self._pack_side(results, name)

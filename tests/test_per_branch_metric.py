@@ -12,6 +12,7 @@ from pycocotools.cocoeval import COCOeval              # noqa: E402
 
 from aodet.evaluation.per_branch_metric import (       # noqa: E402
     BRANCHES,
+    blob_eval_img_ids,
     coco_ap,
     collect_ap_table,
 )
@@ -117,3 +118,15 @@ def test_filter_gt_sources():
     assert [a["id"] for a in out["annotations"]] == [1, 3]
     assert filter_gt_sources(gt, ("blob", "projected"))["annotations"] \
         == gt["annotations"]
+
+
+def test_blob_eval_img_ids_excludes_projected_only_frames():
+    """Review 2026-10-31 §4.2: projected-only frames are neither positives
+    nor negatives in the blob view; unannotated frames stay negatives."""
+    gt = {"images": [{"id": i} for i in (1, 2, 3, 4)],
+          "annotations": [
+              {"id": 1, "image_id": 1, "source": "blob"},
+              {"id": 2, "image_id": 2, "source": "projected"},
+              {"id": 3, "image_id": 3, "source": "projected"},
+              {"id": 4, "image_id": 3, "source": "blob"}]}
+    assert blob_eval_img_ids(gt, [1, 2, 3, 4]) == [1, 3, 4]
