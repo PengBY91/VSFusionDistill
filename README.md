@@ -110,8 +110,8 @@ degraded — the sonar-configuration axis belongs to the sibling topic F1.
 
 | family | topic-doc id | recipe | status (2026-10-31) |
 |---|---|---|---|
-| sonar-only baseline | B0 | single-stream single-head YOLOX-S | config `configs/f2/s0_b0_sonar_only_yoloxs.py`; retraining (E06) |
-| inference-time fusion | ≈B2/B3 | two streams, three heads + cross-attention, p(s) degradation sampling in training | config `configs/f2/s0_cross_attn_yoloxs.py`; retraining (E06) |
+| sonar-only baseline | B0 | single-stream single-head YOLOX-S | config `configs/f2/s0_b0_sonar_only_yoloxs.py`; retraining (E07) |
+| inference-time fusion | ≈B2/B3 | two streams, three heads + cross-attention, p(s) degradation sampling in training | config `configs/f2/s0_cross_attn_yoloxs.py`; retraining (E07) |
 | privileged distillation | B1, M1–M5 | frozen clear-view teacher + branch_kd + (M4) cross-plane MIL | modules + tests ready (`teachers/`, `losses/`); training configs gated on S0 |
 | late fusion reference | B5 | two single-modality detectors matched at result level | planned (structurally uncoupled; correlation reference) |
 
@@ -170,7 +170,11 @@ Stage notes:
    2573 pairs + projection report; the RSFusion/UMOD converters await
    data). Sonar boxes have no manual annotation — `uxo_projection`
    calibrates per recording against the official poses and projects;
-   GT semantics = visible echo region (boxes clamped to echo scale).
+   training GT uses gated visible-echo boxes only
+   (`sonar_gt_sources=("blob",)`; the E06 validity gate showed
+   projected-source frames carry no echo by construction), while
+   projected boxes (clamped to echo scale) serve cross-modal
+   correspondence and the `gt=all` eval view.
 2. **Paired format**: four JSON/CSV files + image dirs are the entire
    state; `frame_meta.csv` keys each sample to both COCO image ids, the
    split and the degradation seed.
@@ -263,13 +267,14 @@ naive-Bayes fused existence ECE) in
   W3 model + configs + tools done, S0-lite smoke passes end-to-end on
   synthetic data.
 - UXO sample verified (×3 label rule, GoPro alignment, extrinsics) and
-  converted: 2573 pairs under `data/paired/uxo/` (recording-level
-  split, train 2199 / test 374).  Sonar-side boxes + cross-modal
-  correspondence π done (TODO 14.2 item 4): per-recording robust
-  calibration + projection, `sonar.json` annotated (blob-gated 1185 /
-  geometric 1388), `pairs.csv` written; error stats + contact sheet in
-  `data/paired/uxo/projection_report.json` / `projection_check.jpg`
-  and the W1–W3 log.
+  converted: 2573 pairs under `data/paired/uxo/` (E07 split: test =
+  100927 arc + 124735 line, train 1680 / test 893 frames — each test
+  recording novel in exactly one dimension).  Sonar-side boxes +
+  cross-modal correspondence π done (TODO 14.2 item 4): per-recording
+  robust calibration + `b_rng` anchoring + projection, `sonar.json`
+  annotated (blob 1195 / projected 1378), `pairs.csv` written; error
+  stats + contact sheet in `data/paired/uxo/projection_report.json` /
+  `projection_check.jpg` and the W1–W3 log.
 - GPU env ready for S0-lite on this box (RTX 5090 D v2 24 GB):
   `.venv-gpu` with torch 2.7.1+cu128 + source-built CPU-ops mmcv 2.1.0
   and an NMS CPU fallback (`aodet/cuda_compat.py`) — see
@@ -277,7 +282,12 @@ naive-Bayes fused existence ECE) in
   the CPU/debug `.venv` is untouched.
 - S0-lite first run exposed a GT-semantics flaw: geometric projection
   boxes span half the image at tank ranges while real echoes are
-  compact, so AP stayed ~0 despite converged training.  Projected boxes
-  are now clamped to echo scale (`_PROJ_BOX_MAX`); GT = visible echo
-  region.  B0 + cross-attn retraining on the fixed GT in progress.
+  compact, so AP stayed ~0 despite converged training (E04); projected
+  boxes are now clamped to echo scale.  The clamped retrain (E05) still
+  scored test AP ≈ 0 with train AP50 = 0.80 — root cause: the E02
+  recording-level split confounded geometry (3 arcs in train / 2 lines
+  in test) and projected boxes mark no-echo frames (E06 validity gate).
+  E06 anchored the calibration (blob-frame dy p50 1.5–6 px) and moved
+  training GT to blob-only; E07 retrains B0 + cross-attn on the
+  single-novelty split.
 - RSFusionDet repo still empty (route a watch ongoing).

@@ -217,7 +217,7 @@ AP≈0 是 GT 语义问题而非训练问题：投影框是目标几何轮廓在
 
 **设置**。run 目录与配置同 E07 表（两配置同前身各跑一次）；GT = 钳制尺度但**未修位置**的
 重写版（7abf7ef 语义）。中途停止（B0 epoch~25、cross-attn
-epoch~10）。数字转写自 `work_dirs/s0_b0_sonar_only_yoloxs_seed0/
+epoch~10）。数字转写自 `work_dirs/e05_s0_b0_sonar_only_yoloxs_seed0/
 e05_probe/`（epoch_10.pth 探针评测，2026-10-31 08:35–08:50）。
 
 **结果**。

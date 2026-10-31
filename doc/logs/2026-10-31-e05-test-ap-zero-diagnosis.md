@@ -40,7 +40,7 @@ d0` 探针评测：test AP=0.0000 / AP50=0.0001——与 E04 同样的全灭数�
    信号一直都在表里，只是当时被「dcol 只看列向 + 过门自洽」的
    口径掩盖。
 
-证据存档：`work_dirs/s0_b0_sonar_only_yoloxs_seed0/e05_probe/`。
+证据存档：`work_dirs/e05_s0_b0_sonar_only_yoloxs_seed0/e05_probe/`。
 
 ## 根因机制（自洽链）
 

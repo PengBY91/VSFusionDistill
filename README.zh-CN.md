@@ -93,8 +93,8 @@ clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no
 
 | 家族 | 选题文档编号 | 做法 | 状态（2026-10-31） |
 |---|---|---|---|
-| 纯声呐基线 | B0 | 声呐单流单头 YOLOX-S | 配置 `configs/f2/s0_b0_sonar_only_yoloxs.py`，E06 重训中 |
-| 推理期融合 | ≈B2/B3 | 双流三头 + 交叉注意力，训练期按 p(s) 退化采样 | 配置 `configs/f2/s0_cross_attn_yoloxs.py`，E06 重训中 |
+| 纯声呐基线 | B0 | 声呐单流单头 YOLOX-S | 配置 `configs/f2/s0_b0_sonar_only_yoloxs.py`，E07 重训中 |
+| 推理期融合 | ≈B2/B3 | 双流三头 + 交叉注意力，训练期按 p(s) 退化采样 | 配置 `configs/f2/s0_cross_attn_yoloxs.py`，E07 重训中 |
 | 特权蒸馏 | B1、M1–M5 | 冻结清晰教师 + branch_kd +（M4）跨平面 MIL | 模块与测试就绪（`teachers/`、`losses/`），训练配置待 S0 闸门后展开 |
 | 晚融合参照 | B5 | 两个单模态检测器结果级匹配融合 | 规划中（结构上无耦合，作支路相关性参照） |
 
@@ -151,8 +151,10 @@ flowchart TB
 
 1. **转换**：源数据集各写一个转换器（UXO 已全流程跑通，2573 对 +
    投影报告；RSFusion/UMOD 转换器就绪待数据）。声呐框没有人工标注，
-   由 `uxo_projection` 用官方位姿做逐 recording 稳健标定后投影生成，
-   GT 语义 = 可见回波区域（框钳制到回波尺度）。
+   由 `uxo_projection` 用官方位姿做逐 recording 稳健标定后投影生成；
+   训练 GT 只用过门可见回波框（`sonar_gt_sources=("blob",)`，E06
+   gate：projected 帧按构造无回波），投影框（钳制到回波尺度）保留
+   作跨模态对应 π 与 `gt=all` 评测口径。
 2. **配对格式**：四个 JSON/CSV + 图片目录就是全部状态；`frame_meta.csv`
    把每个 sample 键到两模态 COCO image id、split 与退化种子。
 3. **训练**：管线顺序固定「同步几何 → 退化采样 → fork&pack」，
@@ -230,10 +232,11 @@ python tools/collect_results.py work_dirs --out results/results.csv
   通过（AP 40.30 vs 官方 40.5）；W2 配对格式/退化/变换/指标完成并有
   测试；W3 模型+配置+工具完成，S0-lite 在合成数据上端到端冒烟通过。
 - UXO sample 核验（×3 标注规则、GoPro 对齐、外参）并转换：
-  `data/paired/uxo/` 下 2573 对（recording 级划分，train 2199 /
-  test 374）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：
-  逐 recording 稳健标定 + 投影，`sonar.json` 已标注（blob 过门 1185 /
-  几何投影 1388），`pairs.csv` 已写；误差统计与拼图见
+  `data/paired/uxo/` 下 2573 对（E07 划分：test = 100927 弧 +
+  124735 线，train 1680 / test 893 帧——每段 test 录音恰有一个
+  新颖维）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：
+  逐 recording 稳健标定 + `b_rng` 锚定 + 投影，`sonar.json` 已标注
+  （blob 1195 / projected 1378），`pairs.csv` 已写；误差统计与拼图见
   `data/paired/uxo/projection_report.json` / `projection_check.jpg`
   及 W1–W3 日志。
 - 本机 GPU 环境就绪，可跑 S0-lite（RTX 5090 D v2 24 GB）：`.venv-gpu`
@@ -241,7 +244,10 @@ python tools/collect_results.py work_dirs --out results/results.csv
   （`aodet/cuda_compat.py`）——见 `env/ENVIRONMENT.md`。固定 cu121
   栈无法跑 Blackwell；CPU 调试 `.venv` 未动。
 - S0-lite 首跑暴露 GT 语义缺陷：几何投影框在水池距离横跨半幅图而
-  真实回波紧凑，训练虽收敛 AP 仍 ≈0。投影框已钳制到回波尺度
-  （`_PROJ_BOX_MAX`），GT 语义统一定义为「可见回波区域」。B0 +
-  cross-attn 在修正后的 GT 上重训中。
+  真实回波紧凑，训练虽收敛 AP 仍 ≈0（E04）；投影框已钳制到回波尺度。
+  钳制后的重训（E05）test AP 仍 ≈0 而 train AP50=0.80——终判：
+  E02 划分混淆了几何（3 弧全 train / 2 线全 test）+ projected 框
+  落在无回波帧（E06 gate）。E06 锚定标定（blob 帧 dy p50 1.5–6 px）
+  并把训练 GT 改为 blob-only；E07 在单维新颖划分上重训
+  B0 + cross-attn。
 - RSFusionDet 仓库仍为空（路线 a 监视中）。
