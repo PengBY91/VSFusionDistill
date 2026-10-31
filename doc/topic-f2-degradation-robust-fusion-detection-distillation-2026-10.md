@@ -446,6 +446,7 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 - [x] 路线 b：下载 UXO `sample.7z`（1.7 GB）。用官方 `dfki-ric/uxo-dataset2024` 的脚本读取，核验三件事：标签坐标"乘 3"的规则；issue 报告的框与原始 GoPro 帧对不上的问题；外参。（2026-10-30 完成：md5 精确匹配；①×3 规则定量+目检成立（labels 在 640×360 空间、随包 jpg 为 1920×1080，×3 框在 2 个 recording 样帧上套住目标）；②"对不上"成因=把 ×3 框套到 5.3K 原始帧（缩放比 2.77≠3），随包 jpg 上不复现，转换器以随包 jpg 为准；③外参齐备（transforms.yaml TF 树+4 份 GoPro 内参+逐帧 gantry/ARIS 元数据）。类别 3 种 2616 标注帧。详见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [ ] 根据 sample 的核验结果，决定是否下载全量，以及下载哪几个包（`data_export_polar` 16.5 GB、`data_processed` 61.5 GB 等）。
 - [x] UXO 声呐框投影：用官方位姿和标定投影，同时生成跨模态对应 π；抽样做人工目检，记录投影误差。（2026-10-31 完成：`aodet/datasets/converters/uxo_projection.py` 逐 recording 三阶段稳健标定（相机方位→[R_son,b_rng]→10 参联合 Huber）+ `tools/project_uxo_sonar.py`；合成水槽 9 测试覆盖极坐标/瞄准×弧线/直线四几何，P↔b 退化用先验+|b|≤0.8 m 硬界处理。实数据 2573 帧全部落框：blob 门控 1185 / 几何投影 1388 / 丢弃 0，pairs.csv π 就绪。误差如实记录：直线录音最好（dcol p50 0.75–1.23 beams）；弧线录音存在 ~2° rms 的未建模时变瞄准残差（行程端部达 10–30 beams）；100927 的 b 顶在 −0.8 界上、P_z 偏深（该录音退化活跃）。已知局限与非作者人工目检待办见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]投影一节。）
+- [ ] `project_uxo_sonar.py` 加 `--calib-cache`：逐 recording 标定结果（含逐帧拟合诊断）落盘复用，键=输入指纹（源标注+位姿+参数的 hash）。动因：GT 语义修正后 `--write` 重写时，与 dry-run 完全相同的标定被从零重算——~50 分钟里 ~49 分钟是重复计算；全量 UXO（96 GB、数十 recording）会按比例放大这笔浪费。须在**全量转换前**完成，并加缓存命中/未命中结果一致的等价测试。
 - [ ] UMOD：只做 objectness 小样本 sanity check，不再列为外部测试集；以后补全了再评估。
 - [ ] 与 H1 约定数据使用方式（第 10 节"评审"一项；G1 的前提）。
 
