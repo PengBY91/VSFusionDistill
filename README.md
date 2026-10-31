@@ -20,7 +20,7 @@ variant for the training machine).  No third-party repo is modified:
 | `aodet/evaluation/` | per-branch COCO AP, branch error correlation (φ, ΔP_miss, Spearman, naive-Bayes fusion, ECE) |
 | `aodet/geometry/` | M₀ camera→bearing mapping + flip mirroring |
 | `configs/` | `_base_` (model/dataset/schedule/runtime) + `f2/` S0-lite configs |
-| `tools/` | `train.py`, `test.py` (per-branch D0–D∞ scan), `make_degraded_testsets.py`, `run_seeds.sh`, `collect_results.py`, third-party pinning, RSFusionDet watch |
+| `tools/` | `train.py`, `test.py` (per-branch D0–D∞ scan), `make_degraded_testsets.py`, `run_seeds.sh`, `collect_results.py`, `correlation_table.py`, third-party pinning, RSFusionDet watch |
 | `tests/` | 63 tests: degradation physics, format round-trip, geometry, metrics, model, UXO converter, end-to-end pipeline & tools |
 | `env/` | install scripts + `ENVIRONMENT.md` version record |
 
@@ -67,7 +67,8 @@ Per-branch AP by degradation level from saved prediction files
 (`tools/test.py` → `pred.<branch>.<level>.json` + `ap_summary.json`);
 branch error correlation (φ, conditional miss lift ΔP_miss with
 bootstrap CI, Spearman confidence correlation, naive-Bayes fused
-existence ECE) in `aodet/evaluation/branch_correlation.py`.
+existence ECE) in `aodet/evaluation/branch_correlation.py`, run over
+a work dir via `tools/correlation_table.py` → `correlation.csv`.
 
 ## Status (2026-10-31)
 
@@ -90,4 +91,9 @@ existence ECE) in `aodet/evaluation/branch_correlation.py`.
   and an NMS CPU fallback (`aodet/cuda_compat.py`) — see
   `env/ENVIRONMENT.md`.  Pinned cu121 stack cannot run on Blackwell;
   the CPU/debug `.venv` is untouched.
+- S0-lite first run exposed a GT-semantics flaw: geometric projection
+  boxes span half the image at tank ranges while real echoes are
+  compact, so AP stayed ~0 despite converged training.  Projected boxes
+  are now clamped to echo scale (`_PROJ_BOX_MAX`); GT = visible echo
+  region.  B0 + cross-attn retraining on the fixed GT in progress.
 - RSFusionDet repo still empty (route a watch ongoing).

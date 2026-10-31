@@ -85,3 +85,16 @@ S0-lite runs train from scratch and are unaffected.
 The pinned CPU/debug `.venv` is untouched and remains the reproducibility
 baseline; the cu121 `env/environment.yml` stays for any true 24 GB
 Ampere/Ada training machine where the pins work as-is.
+
+**Running S0-lite on this box** (the two configs fit the 24 GB card in
+parallel, ~4 GB B0 + ~9 GB cross-attn):
+
+    export PATH="$PWD/.venv-gpu/bin:$PATH"
+    RESULTS=results/results_b0.csv bash tools/run_seeds.sh \
+        configs/f2/s0_b0_sonar_only_yoloxs.py 0 &
+    RESULTS=results/results_xattn.csv bash tools/run_seeds.sh \
+        configs/f2/s0_cross_attn_yoloxs.py 0 &
+
+(Separate `RESULTS` files avoid the two collectors racing on
+`results/results.csv`; merge afterwards.)  Rough wall-clock with both
+running: B0 ~1.7 h, cross-attn ~3.5 h, plus the D0–D∞ scan.
