@@ -96,6 +96,17 @@ _B_RNG_MAX = 0.8    # hard bound on b_rng: |echo offset| <= half the
                     # run away (observed: b = -16 m on 100927)
 _GATE_COL = 8.0     # blob-vs-projection consistency gate (beams)
 _GATE_RNG = 0.20    # blob-vs-projection consistency gate (m)
+# cap on the *projected* (non-blob) box extent in px, (w, h): the
+# geometric silhouette at tank ranges (~1.1 m) spans 60-130 beams and
+# 160-390 rows -- most of the image -- while the detectable signal is
+# the compact echo highlight (measured blob boxes: 15-42 x 10-35 px,
+# p10-p90).  GT semantics is "visible echo region", so the geometric
+# box is clamped to echo scale centred on the projection; measured blob
+# boxes are never clamped.  Without this the two source populations sit
+# at different scales and both learning (SimOTA/IoU targets) and
+# evaluation (compact detections vs half-image GT) break -- observed as
+# B0 sonar AP ~ 0.001 despite converged training loss.
+_PROJ_BOX_MAX = (40.0, 60.0)
 _OUTLIER_AZ_DEG = 6.0   # calibration blob rejection gate
 _OUTLIER_RNG_M = 0.5
 
@@ -571,10 +582,13 @@ def predict(calib: CalibResult, o: FrameObs) -> Tuple[float, float]:
 def sonar_bbox(calib: CalibResult, o: FrameObs) -> Optional[Dict]:
     """GT entry for one frame: bbox + source + pi link + diagnostics.
 
-    Boxes are clipped to the 128x441 image; a frame whose (clipped)
-    box is empty -- the calibrated projection lands outside the
-    insonified window and no gated blob vouches for the target --
-    yields no GT rather than a fabricated box (returns None).
+    GT semantics is the *visible echo region*: a gated blob box is the
+    measured echo; otherwise the geometric projection box, clamped to
+    echo scale (_PROJ_BOX_MAX).  Boxes are clipped to the 128x441
+    image; a frame whose (clipped) box is empty -- the calibrated
+    projection lands outside the insonified window and no gated blob
+    vouches for the target -- yields no GT rather than a fabricated
+    box (returns None).
     """
     row_p, col_p = predict(calib, o)
     L = CLASS_LENGTH_M.get(o.category_id, 0.5)
@@ -584,6 +598,12 @@ def sonar_bbox(calib: CalibResult, o: FrameObs) -> Optional[Dict]:
     col_hi = col_of_angle(beam_center_deg(col_p) + dth)
     row_lo = row_p - (L / 2 + 0.04) / o.dr
     row_hi = row_p + (L / 2 + 0.04) / o.dr
+    # clamp the geometric extent to echo scale, centred on the
+    # projection (see _PROJ_BOX_MAX)
+    col_lo = max(col_lo, col_p - _PROJ_BOX_MAX[0] / 2)
+    col_hi = min(col_hi, col_p + _PROJ_BOX_MAX[0] / 2)
+    row_lo = max(row_lo, row_p - _PROJ_BOX_MAX[1] / 2)
+    row_hi = min(row_hi, row_p + _PROJ_BOX_MAX[1] / 2)
     source = "projected"
     if o.blob is not None:
         br, bc, bw, bh = o.blob
