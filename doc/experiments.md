@@ -392,6 +392,15 @@ blob-only**（`sonar_gt_sources=("blob",)`；无回波帧保留在 batch
 | cross-attn（fused=uncoupled 逐位同） | d0 | 0.001 | 0.000 | 0.047 | d1–d4 同 d0；d∞ sonar 0.000 / camera 0.000 |
 | **cross-attn train 自评** | d0 | **0.604** | 0.257 | **0.980** | blob 口径 AP50=**0.922**；camera AP50=1.000 |
 
+相关性表（`correlation.csv`，cross-attn）：test×blob 口径 n=495，
+φ≈−0.06…−0.07、ΔP_miss≈−0.00…−0.01、Spearman≈−0.09（d0–d4），
+D∞ 行退化（相机恒 miss → φ=nan）。检出处于地板时相关性指标
+无信息量，表结构与口径就位，待有检出的模型再生效。**工具修正**
+（本次发现）：`correlation_table.py` 原先不过滤 split——train 帧
+（有 GT 无预测）全被记 miss，n_pairs 虚高到 2573、φ 被稀释；现默认
+`--split test` + `--gt-sources blob`（E06 主口径），`--split all
+--gt-sources blob projected` 恢复全量语义，新增回归测试 2 项。
+
 **test @ d0 按录音分解**（预登记标准 2 的判定数据，blob 口径）：
 
 | recording | 几何/新颖维 | AP50 | 判定 |

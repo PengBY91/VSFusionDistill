@@ -110,3 +110,17 @@ def test_correlation_table_reports_both_sonar_heads_and_filters(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     rows = list(csv.DictReader(open(os.path.join(run, "correlation.csv"))))
     assert all(int(row["n_pairs"]) == 6 for row in rows)   # 3,4 + 5..8
+
+
+def test_correlation_table_unfiltered_semantics(tmp_path):
+    run, paired = _build(tmp_path)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "tools", "correlation_table.py"),
+         str(run), "--paired", str(paired), "--levels", "d0",
+         "--split", "all", "--sonar-gt-sources", "blob", "projected"],
+        capture_output=True, text=True, cwd=REPO)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = os.path.join(run, "correlation.csv")
+    rows = {row["level"]: row for row in csv.DictReader(open(out))}
+    # frames 1-8 all pair: projected GT counts, train frames co-miss
+    assert int(rows["d0"]["n_pairs"]) == 8
