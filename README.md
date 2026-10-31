@@ -1,5 +1,7 @@
 # ao-det — degradation-robust acoustic–optic detection (F1/F2)
 
+English | [中文](README.zh-CN.md)
+
 Codebase for the F2 topic plan: degradation-robust sonar–camera fusion
 detection with privileged distillation and branch independence
 (`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`),
@@ -21,22 +23,28 @@ variant for the training machine).  No third-party repo is modified:
 | `aodet/geometry/` | M₀ camera→bearing mapping + flip mirroring |
 | `configs/` | `_base_` (model/dataset/schedule/runtime) + `f2/` S0-lite configs |
 | `tools/` | `train.py`, `test.py` (per-branch D0–D∞ scan), `make_degraded_testsets.py`, `run_seeds.sh`, `collect_results.py`, `correlation_table.py`, third-party pinning, RSFusionDet watch |
-| `tests/` | 63 tests: degradation physics, format round-trip, geometry, metrics, model, UXO converter, end-to-end pipeline & tools |
+| `tests/` | 78 tests: degradation physics, format round-trip, geometry, metrics, model, UXO converter & projection, end-to-end pipeline & tools |
 | `env/` | install scripts + `ENVIRONMENT.md` version record |
+| `doc/` | topic plans, dated build logs (`doc/logs/`), experiment record — per-experiment setup / results / interpretation / conclusions (`doc/experiments.md`) — and evidence archives |
 
 ## Quick start
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # 63 passed
+python -m pytest tests/ -q          # 78 passed
 
 # S0-lite (UXO sample already converted to data/paired/uxo/)
 python tools/train.py configs/f2/s0_b0_sonar_only_yoloxs.py --seed 0
-python tools/test.py  configs/f2/s0_b0_sonar_only_yoloxs.py \
-    work_dirs/s0_b0_sonar_only_yoloxs_seed0/latest.pth \
+# mmengine writes epoch_N.pth + last_checkpoint (no latest.pth symlink)
+ckpt=$(cat work_dirs/s0_b0_sonar_only_yoloxs_seed0/last_checkpoint)
+python tools/test.py  configs/f2/s0_b0_sonar_only_yoloxs.py "$ckpt" \
     --out-dir work_dirs/s0_b0_sonar_only_yoloxs_seed0
 python tools/collect_results.py work_dirs --out results/results.csv
 ```
+
+Per-experiment setup, result tables, interpretation and conclusions are
+kept in `doc/experiments.md` (Chinese); narrative build logs live in
+`doc/logs/`.
 
 ## Paired format (one layout for every source dataset)
 
