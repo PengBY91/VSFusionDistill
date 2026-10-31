@@ -1442,10 +1442,10 @@ S0-lite 的最小矩阵因此是：B0、B2、B3、B4-lite，各 1 个种子，�
 ## 6. 实施记录（分支 `fix/review-2026-10-31-kd-arch-training`）
 
 **测试**（CPU `.venv`：torch 2.1.2+cpu、mmcv 2.1.0、mmengine 0.10.7、mmdet 3.3.0、numpy 1.26.4、scipy 1.15.3）：
-`pytest` 共 130 项，**129 通过，1 失败**。
+`pytest` 共 130 项。
 
-- 失败项：`tests/test_uxo_projection.py::test_calibrate_recovers_synthetic_tank[aim-line]`（`P error 1.246 m`，断言阈值 0.8 m）。
-- 这项失败**与本分支无关**：在未修改的 `main`（`1a69ba5`）上用同一环境复跑，同样失败。本分支没有改动 `uxo_projection.py` 及其测试。排查与修复见 §7。
+- 合入时（`f5cf12d`）：129 通过，1 失败。失败项是 `tests/test_uxo_projection.py::test_calibrate_recovers_synthetic_tank[aim-line]`（`P error 1.246 m`，断言阈值 0.8 m）。这项失败与本分支无关：在未修改的 `main`（`1a69ba5`）上用同一环境复跑，同样失败。
+- 标定修复后（`11fcb19`，见 §7）：**130 项全部通过**，用时约 18 分钟（瞄准模式标定变慢）。唯一的警告是 torch 自身的 `meshgrid` 弃用提示。
 - `.venv-gpu`（torch 2.7.1+cu128）尚未复跑。
 
 **新增或修改的回归测试**：KD 梯度可达（§1.1）、E08 抖动的管线级测试和配置顺序（§1.2）、声呐监督权重对等（§1.3）、YOLOX 配方（§1.4）、D∞ 清空相机 GT（§1.5）、单次前向与 `head.loss` 逐项一致（§1.6）、退化抽样随机性（§1.7）、三种融合的 D∞ 训练/测试一致性（§2.1）、位置感知与 LayerScale（§2.2）、方位注意力（§2.2B）、KD 前景加权、量级和分数蒸馏（§3.1–§3.2）、KD 路由与特征 KD、可达性权重（§3.3–§3.4）、教师严格加载（§3.5）、L_xp 单边约束与非线性方位映射（§3.6）、相关性表的 split / 录音 / GT 源过滤与双声呐头输出（§4.1）、blob 口径的 img_ids（§4.2）、B2 配置（§4.4）。
