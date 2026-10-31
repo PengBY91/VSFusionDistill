@@ -237,12 +237,21 @@ def test_scale_jitter_survives_full_train_pipeline():
 
 def test_e08_configs_jitter_after_resize():
     from mmengine.config import Config
-    for path in ("configs/f2/e08_s0_b0_sonar_only_yoloxs.py",
-                 "configs/f2/e08_s0_cross_attn_yoloxs.py"):
+    jittered = ("configs/f2/e08_s0_b0_sonar_only_yoloxs.py",
+                "configs/f2/e08_s0_cross_attn_yoloxs.py",
+                "configs/f2/e09_s0_b0_jitter_yoloxs.py",
+                "configs/f2/e09_s0_cross_attn_yoloxs.py")
+    for path in jittered:
         types = [t["type"] for t in
                  Config.fromfile(path).train_dataloader.dataset.pipeline]
         assert types.index("AOSonarScaleJitter") > \
             types.index("AOPairedResize"), (path, types)
+    # E09a is the recipe-only control: it must carry NO jitter, or the
+    # a/b contrast (recipe effect vs jitter effect) collapses
+    types = [t["type"] for t in Config.fromfile(
+        "configs/f2/e09_s0_b0_recipe_yoloxs.py"
+    ).train_dataloader.dataset.pipeline]
+    assert "AOSonarScaleJitter" not in types
 
 
 def test_dinf_clears_camera_gt_and_flags_sample():

@@ -28,6 +28,9 @@ F2_CONFIGS = [
     "configs/f2/s0_bearing_attn_yoloxs.py",
     "configs/f2/e08_s0_b0_sonar_only_yoloxs.py",
     "configs/f2/e08_s0_cross_attn_yoloxs.py",
+    "configs/f2/e09_s0_b0_recipe_yoloxs.py",
+    "configs/f2/e09_s0_b0_jitter_yoloxs.py",
+    "configs/f2/e09_s0_cross_attn_yoloxs.py",
 ]
 
 
