@@ -78,9 +78,17 @@ Second torch-version flip handled: torch >= 2.6 defaults
 `torch.load(weights_only=True)`; mmengine 0.10.7 passes no override and
 its checkpoints embed `HistoryBuffer`/numpy objects in `meta`, so
 `tools/test.py` loads local checkpoints through a scoped
-`weights_only=False` wrapper (trusted own artifacts).  A future
-`cfg.resume=True` on this env would need the same workaround; the
-S0-lite runs train from scratch and are unaffected.
+`weights_only=False` wrapper (trusted own artifacts).  The predicted
+resume case fired on 2026-11-02: resuming e10_m3_tau4 from epoch_10
+died twice on `numpy.core.multiarray._reconstruct`.  Measured: the
+class-level `add_safe_globals([HistoryBuffer])` committed in fa2777c
+does NOT suffice (numpy globals inside its pickled state are still
+denied).  Working mitigation: launch the resume with
+`TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` plus `--cfg-options resume=True`
+(mmengine only auto-resumes when `cfg.resume` is truthy).  Durable fix
+owed before E11's 3-seed × 3-arm long runs: port test.py's scoped
+wrapper into the train/resume path and add a save-then-resume smoke
+test.  Full incident: `doc/logs/2026-11-02-tau4-resume-weights-only.md`.
 
 The pinned CPU/debug `.venv` is untouched and remains the reproducibility
 baseline; the cu121 `env/environment.yml` stays for any true 24 GB

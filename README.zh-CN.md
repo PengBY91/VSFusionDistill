@@ -146,17 +146,17 @@ flowchart TB
 | `aodet/evaluation/` | 逐支路 COCO AP（`per_branch_metric.py`）、支路误差相关性（`branch_correlation.py`：φ、ΔP_miss、Spearman、朴素贝叶斯融合、ECE） |
 | `aodet/geometry/` | M₀ 相机→方位映射 + 翻转镜像（`m0.py`）、ARIS 波束表 |
 | `configs/` | `_base_`（模型/数据/调度/运行时）+ `f2/` S0-lite 配置（B0、cross-attn） |
-| `tools/` | `train.py`、`test.py`（逐支路 D0–D∞ 扫描）、`project_uxo_sonar.py`（标定+投影）、`check_gt_validity.py`、`make_degraded_testsets.py`、`run_seeds.sh`、`collect_results.py`、`correlation_table.py`、第三方 pin、RSFusionDet 监视 |
-| `tests/` | 161 项测试（2026-11-01 收集数）：退化物理、格式往返、几何、指标、模型、UXO 转换器与投影、端到端管线与工具 |
+| `tools/` | `train.py`、`test.py`（逐支路 D0–D∞ 扫描，支持按 split/逐录音/逐类输出）、`project_uxo_sonar.py`（标定+投影，指纹键控缓存）、`uxo_inventory.py` / `split_uxo_recordings.py`（E11 录音清点与冻结划分）、`anatomy.py` / `camera_anatomy.py`（逐录音逐类解剖）、`download_uxo_full.sh`（全量 UXO 下载+md5 校验）、`check_gt_validity.py`、`make_degraded_testsets.py`、`run_seeds.sh`、`run_loocv.sh`、`collect_results.py`、`correlation_table.py`、第三方 pin、RSFusionDet 监视 |
+| `tests/` | 207 项测试（2026-11-02 收集数）：退化物理、格式往返、几何、指标（含已知答案测试）、模型、UXO 转换器/投影/标定缓存、E11 工具（清点/划分/逐 split 评测）、端到端管线与工具 |
 | `env/` | 安装脚本 + `ENVIRONMENT.md` 版本记录 |
-| `doc/` | 选题方案、实验台账 `experiments.md`、过程日志 `doc/logs/`、证据存档 `doc/evidence/` |
+| `doc/` | 选题方案、复盘 `f2-rethink-2026-11-01.md`、实验台账 `experiments.md`、过程日志 `doc/logs/`、代码审查 `doc/reviews/`、证据存档 `doc/evidence/` |
 | `data/paired/` | 转换后的配对数据（UXO：2573 对 + 投影报告与拼图） |
 
 ## 5. 快速开始
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # 161 tests collected (2026-11-01)
+python -m pytest tests/ -q          # 207 tests collected (2026-11-02)
 
 # S0-lite（UXO sample 已转换至 data/paired/uxo/）
 python tools/train.py configs/f2/s0_b0_sonar_only_yoloxs.py --seed 0
@@ -184,11 +184,11 @@ python tools/collect_results.py work_dirs --out results/results.csv
 
 基于保存的预测文件按退化级别出逐支路 AP（`tools/test.py` → `pred.<branch>.<level>.json` + `ap_summary.json`）。声呐支路同时报全量 GT 与 blob 子集两个口径（`gt=all` / `gt=blob`）：投影框带标定距离维误差，blob 子集是干净参照。支路误差相关性（φ、带 bootstrap 置信区间的条件漏检升幅 ΔP_miss、Spearman 置信相关、朴素贝叶斯融合存在性 ECE）实现在 `aodet/evaluation/branch_correlation.py`，经 `tools/correlation_table.py` 对 run 目录输出 `correlation.csv`。
 
-## 9. 状态（2026-11-01）
+## 9. 状态（2026-11-02）
 
-- 环境与管线：COCO YOLOX-S 复现门通过（AP 40.30 vs 官方 40.5）；本机 RTX 5090 用 `.venv-gpu`（torch 2.7.1+cu128，见 `env/ENVIRONMENT.md`）。
-- 数据：UXO sample 已转换为 `data/paired/uxo/`（2573 对；镜像盆修复后重标定为 blob 1319 / projected 1254）。训练 GT 用 blob-only，投影框只作 π 与 `gt=all` 口径。
-- 实验：E01–E10 记录在 `doc/experiments.md`。E10 已按复盘降级为方向性读数；τ ∈ {1, 4} 两臂出数后只记录不解读。
-- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，等待全量数据下载和代码前置项（标定指纹缓存、三分 split、录音清点、按 split 评测与已知答案测试）。
-- 待决：是否下载全量 UXO 并投入 E11 预算；E11 落在天花板或地板档时论文定位如何调整（见复盘 §3.5、§7）。
+- 环境与管线：COCO YOLOX-S 复现门通过（AP 40.30 vs 官方 40.5）；本机 RTX 5090 用 `.venv-gpu`（torch 2.7.1+cu128，见 `env/ENVIRONMENT.md`；断点续训须带 `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`）。
+- 数据：UXO sample 已转换为 `data/paired/uxo/`（2573 对；镜像盆修复后重标定为 blob 1319 / projected 1254），训练 GT 用 blob-only。全量 UXO 下载在途：data_processed.7z（57 GiB）已 md5 校验（11-02 05:32），两个 16 GB 导出包在途（`data/raw/uxo-full/download.log`）。
+- 实验：E01–E10 记录在 `doc/experiments.md`。E10 已按复盘降级为方向性读数；τ 消融 tau1 已出数、tau4 断点续训在跑（事故与恢复见 `doc/logs/2026-11-02-tau4-resume-weights-only.md`），出数只入账不解读。
+- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，代码前置项全部落地（21f1345 + 6e2043a，207 项测试绿）。数据到位后的管线：解压 → 2 条录音适配验证 → 转换 → 标定（指纹缓存可断点）→ 清点 → 冻结划分 → 数据闸门 0。工程收口项：train 侧 resume 的 scoped weights_only 修复（见事故记录待办一）。
+- 待决：E11 落在天花板或地板档时论文定位如何调整（见复盘 §3.5、§7）；G1/G2 未满足下投入与 G0 范围的确认（复盘 §7）。
 - RSFusionDet 仓库仍为空（每两周核验，`doc/logs/rsfusiondet-watch.log`）。
