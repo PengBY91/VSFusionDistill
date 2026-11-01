@@ -236,6 +236,39 @@ def test_kd_path_with_frozen_teacher():
     sum(v for k, v in losses.items() if "loss" in k).backward()
 
 
+def test_frozen_teacher_loads_real_checkpoint(tmp_path):
+    """torch>=2.6 defaults torch.load to weights_only=True; mmengine
+    checkpoints embed non-tensor meta objects and the strict unpickler
+    rejects them.  FrozenTeacher must load them anyway (E10: the teacher
+    checkpoint is this repo's own artifact)."""
+    import numpy as np
+    from aodet.models.teachers.frozen_teacher import FrozenTeacher
+    sbb, snc, shd = _stream_cfg()
+    teacher_cfg = dict(
+        type="TwoStreamYOLOX",
+        sonar_backbone=sbb, sonar_neck=snc,
+        camera_backbone=_stream_cfg()[0], camera_neck=_stream_cfg()[1],
+        camera_head=_stream_cfg()[2], uncoupled_sonar_head=shd)
+    reference = FrozenTeacher(dict(teacher=teacher_cfg,
+                                   allow_random_teacher=True)).model
+    # a checkpoint the way mmengine saves it: state_dict + non-tensor meta
+    path = str(tmp_path / "teacher.pth")
+    torch.save({"state_dict": reference.state_dict(),
+                "meta": {"seed": np.int64(0), "iter": np.array([1, 2])}},
+               path)
+    # premise only where it holds: torch>=2.6 defaults weights_only=True
+    import inspect
+    strict_default = bool(
+        inspect.signature(torch.load).parameters["weights_only"].default)
+    if strict_default:
+        with pytest.raises(Exception):
+            torch.load(path, map_location="cpu")
+    loaded = FrozenTeacher(dict(teacher=teacher_cfg, teacher_checkpoint=path))
+    for (ka, va), (kb, vb) in zip(reference.state_dict().items(),
+                                  loaded.model.state_dict().items()):
+        assert ka == kb and torch.equal(va, vb)
+
+
 def test_cross_plane_mil_loss():
     m0 = M0Mapping(slope=30.75, intercept=-15.375, residual_std=0.5,
                    camera_hfov_deg=30.75, sonar_fov_deg=30.75)

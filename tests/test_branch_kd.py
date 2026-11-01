@@ -123,3 +123,71 @@ def test_reach_keeps_background_floor():
     zero = [torch.zeros(1, 1, 20, 20)]
     torch.testing.assert_close(objectness_kd(s, t, reach=zero),
                                objectness_kd(s, t))
+
+
+# -- distillation temperature (F2 §5.3; E10) -------------------------------
+
+def test_tau_one_is_bitwise_identity():
+    """tau=1 (explicit) must reproduce the untempered loss exactly."""
+    t_obj = [torch.randn(2, 1, 8, 8)]
+    t_cls = [torch.randn(2, 3, 8, 8)]
+    s_obj = [torch.randn(2, 1, 8, 8)]
+    s_cls = [torch.randn(2, 3, 8, 8)]
+    torch.testing.assert_close(
+        objectness_kd(s_obj, t_obj, tau=1.0), objectness_kd(s_obj, t_obj))
+    torch.testing.assert_close(
+        score_kd(s_cls, s_obj, t_cls, t_obj, tau=1.0),
+        score_kd(s_cls, s_obj, t_cls, t_obj))
+
+
+def test_tau_softens_teacher_targets():
+    """tau changes how hard the teacher's saturated confidences press on a
+    partially-matching student.  Teacher logit 8 (sigma .9997), student
+    logit 4 (sigma .982): both taus give a positive finite KL on this
+    fixed mismatched pair, and the tau=2 value differs from tau=1 (the
+    optimum stays 'copy the teacher'; tau reshapes curvature, not the
+    argmin -- which is why zero-at-match holds separately)."""
+    t = [torch.full((1, 1, 8, 8), 8.0)]
+    partial = [torch.full((1, 1, 8, 8), 4.0)]
+    at_tau1 = float(objectness_kd(partial, t, tau=1.0))
+    at_tau2 = float(objectness_kd(partial, t, tau=2.0))
+    assert 0.0 < at_tau1 < 1.0               # hard target forgives less
+    assert 0.0 < at_tau2 < 4.0
+    assert abs(at_tau2 - at_tau1) > 1e-3     # tau actually changes the loss
+
+
+def test_tau_keeps_zero_loss_at_match():
+    """s == t must be a perfect match at any tau (both logits divided)."""
+    t_obj = [torch.randn(2, 1, 8, 8)]
+    t_cls = [torch.randn(2, 3, 8, 8)]
+    for tau in (2.0, 4.0):
+        assert abs(float(objectness_kd([t_obj[0].clone()], t_obj,
+                                       tau=tau))) < 1e-5
+        assert abs(float(score_kd([t_cls[0].clone()], [t_obj[0].clone()],
+                                  t_cls, t_obj, tau=tau))) < 1e-4
+
+
+def test_tau_scales_gradient_not_just_value():
+    """Hinton scaling: d(loss)/d(student logit) keeps O(1) magnitude across
+    tau (the raw /tau softmax-style gradient would shrink like 1/tau)."""
+    t = [torch.full((1, 1, 8, 8), 6.0)]
+    g = {}
+    for tau in (1.0, 4.0):
+        s = [torch.zeros(1, 1, 8, 8, requires_grad=True)]
+        objectness_kd(s, t, tau=tau).backward()
+        g[tau] = float(s[0].grad.abs().sum())
+    assert 0.2 < g[4.0] / g[1.0] < 5.0
+
+
+def test_tau_flows_through_branch_kd_cfg():
+    t_obj = [torch.full((1, 1, 8, 8), 6.0)]
+    s_obj = [torch.zeros(1, 1, 8, 8)]                # student misses it
+    cls = [torch.zeros(1, 3, 8, 8)]
+    student = {"sonar_uncoupled": _branch(cls[0], s_obj[0])}
+    teacher = {"sonar": _branch(cls[0], t_obj[0])}
+    a = branch_kd_losses(student, teacher, cfg=dict(tau=1.0))
+    b = branch_kd_losses(student, teacher, cfg=dict(tau=2.0))
+    assert set(a) == {"sonar_uncoupled_obj"}
+    assert float(b["sonar_uncoupled_obj"]) > float(a["sonar_uncoupled_obj"]) > 0
+    with pytest.raises(ValueError):
+        objectness_kd(s_obj, t_obj, tau=0.0)

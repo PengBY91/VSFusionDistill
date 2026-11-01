@@ -16,6 +16,13 @@ is never distilled (heterogeneous coordinate systems anyway).  Terms
   YOLOX trains class logits with per-class sigmoids on positives only, so
   a softmax-KL over every location (the earlier ``cls_kl``) distilled
   unsupervised background logits under a wrong mutual-exclusion model.
+* ``tau`` — distillation temperature (F2 §5.3): both teacher and student
+  logits are divided by τ before the sigmoid, and the loss is multiplied
+  by τ², Hinton's scaling, so the gradient magnitude is comparable
+  across τ.  τ = 1 (default) reproduces the untempered loss bit-for-bit.
+  The softmax-KL temperature of the draft lands here as a logit
+  temperature because YOLOX's class head is sigmoid-based (there is no
+  mutual-exclusion normaliser to soften).
 * ``feature_kd_loss`` — foreground-masked MSE between an adapter of the
   student's (uncoupled) sonar neck and the teacher's fused sonar features:
   the representation-level route for privileged information (Q5).
@@ -59,7 +66,8 @@ def _sample_mask(w: Tensor, valid: Optional[Tensor]) -> Tensor:
 def objectness_kd(s_obj: Sequence[Tensor], t_obj: Sequence[Tensor],
                   bg_floor: float = 0.01,
                   valid: Optional[Tensor] = None,
-                  reach: Optional[Sequence[Tensor]] = None) -> Tensor:
+                  reach: Optional[Sequence[Tensor]] = None,
+                  tau: float = 1.0) -> Tensor:
     """Foreground-weighted soft-target KL on objectness logits.
 
     The per-cell term is BCE(s, p_t) − H(p_t), i.e. the Bernoulli KL: the
@@ -77,13 +85,18 @@ def objectness_kd(s_obj: Sequence[Tensor], t_obj: Sequence[Tensor],
             (w = max(p_t·reach, bg_floor)): unreachable targets drop to the
             background weight, while the background push-down keeps the
             same floor on every route (review 2026-11-01 #5).
+        tau: distillation temperature; logits are divided by τ on both
+            sides and the loss is scaled by τ² (see module docstring).
     """
+    tau = float(tau)
+    if tau <= 0:
+        raise ValueError(f"tau must be > 0, got {tau}")
     n = min(len(s_obj), len(t_obj))
     num = s_obj[0].new_zeros(())
     den = s_obj[0].new_zeros(())
     for lvl, (s, t) in enumerate(zip(s_obj[:n], t_obj[:n])):
-        s = _resize_to(s, t.shape[-2:]).float()
-        t = t.detach().float()
+        s = _resize_to(s, t.shape[-2:]).float() / tau
+        t = t.detach().float() / tau
         p_t = t.sigmoid()
         w = p_t
         if reach is not None:
@@ -94,7 +107,7 @@ def objectness_kd(s_obj: Sequence[Tensor], t_obj: Sequence[Tensor],
                                                      reduction="none"))
         num = num + (loss * w).sum()
         den = den + w.sum()
-    return num / den.clamp(min=1.0)
+    return (num / den.clamp(min=1.0)) * tau ** 2
 
 
 def _bernoulli_kl(log_q: Tensor, p: Tensor, eps: float) -> Tensor:
@@ -112,7 +125,8 @@ def score_kd(s_cls: Sequence[Tensor], s_obj: Sequence[Tensor],
              bg_floor: float = 0.01,
              valid: Optional[Tensor] = None,
              reach: Optional[Sequence[Tensor]] = None,
-             eps: float = 1e-6) -> Tensor:
+             eps: float = 1e-6,
+             tau: float = 1.0) -> Tensor:
     """Per-class Bernoulli KL on the detection score σ(cls)·σ(obj).
 
     Weighted by the teacher's max class score (floor ``bg_floor``) so the
@@ -121,7 +135,13 @@ def score_kd(s_cls: Sequence[Tensor], s_obj: Sequence[Tensor],
     :func:`objectness_kd`; without it the score term re-imports the
     camera-only targets reach removed from the obj term (review
     2026-11-01 #4).  Computed in fp32 with autocast off.
+
+    ``tau`` softens the scores on both sides (logits / τ) and scales the
+    loss by τ², as in :func:`objectness_kd`.
     """
+    tau = float(tau)
+    if tau <= 0:
+        raise ValueError(f"tau must be > 0, got {tau}")
     n = min(len(s_cls), len(t_cls))
     num = s_cls[0].new_zeros((), dtype=torch.float32)
     den = s_cls[0].new_zeros((), dtype=torch.float32)
@@ -129,10 +149,10 @@ def score_kd(s_cls: Sequence[Tensor], s_obj: Sequence[Tensor],
         for lvl, (sc, so, tc, to) in enumerate(
                 zip(s_cls[:n], s_obj[:n], t_cls[:n], t_obj[:n])):
             size = tc.shape[-2:]
-            sc = _resize_to(sc, size).float()
-            so = _resize_to(so, size).float()
-            t_score = (tc.detach().float().sigmoid()
-                       * to.detach().float().sigmoid())          # B,C,H,W
+            sc = _resize_to(sc, size).float() / tau
+            so = _resize_to(so, size).float() / tau
+            t_score = ((tc.detach().float() / tau).sigmoid()
+                       * (to.detach().float() / tau).sigmoid())  # B,C,H,W
             log_s = F.logsigmoid(sc) + F.logsigmoid(so)
             w = t_score.max(1, keepdim=True).values
             if reach is not None:
@@ -141,7 +161,7 @@ def score_kd(s_cls: Sequence[Tensor], s_obj: Sequence[Tensor],
             loss = _bernoulli_kl(log_s, t_score, eps)
             num = num + (loss * w).sum()
             den = den + w.sum() * sc.shape[1]
-    return num / den.clamp(min=1.0)
+    return (num / den.clamp(min=1.0)) * tau ** 2
 
 
 def feature_kd_loss(s_feats: Sequence[Tensor], t_feats: Sequence[Tensor],
@@ -182,7 +202,8 @@ def branch_kd_losses(
         student_out / teacher_out: {branch: (cls_score, bbox_pred,
             objectness)} per-level lists.
         cfg: obj_weight (default 1.0), score_weight (default 0.0),
-            bg_floor (default 0.01), routes (default DEFAULT_ROUTES).
+            bg_floor (default 0.01), tau (default 1.0, the distillation
+            temperature), routes (default DEFAULT_ROUTES).
         valid: {student branch: (B,) bool} sample masks.
         reach: per-level reachability weights, applied only to the
             student branches in ``cfg['reach_routes']`` (default: the
@@ -198,6 +219,7 @@ def branch_kd_losses(
     obj_w = float(cfg.get("obj_weight", 1.0))
     score_w = float(cfg.get("score_weight", cfg.get("cls_weight", 0.0)))
     bg = float(cfg.get("bg_floor", 0.01))
+    tau = float(cfg.get("tau", 1.0))
     routes = cfg.get("routes") or DEFAULT_ROUTES
     rr = cfg.get("reach_routes")
     reach_routes = tuple(DEFAULT_REACH_ROUTES if rr is None else rr)
@@ -212,10 +234,11 @@ def branch_kd_losses(
         r = reach if s_name in reach_routes else None
         if obj_w > 0:
             losses[f"{s_name}_obj"] = obj_w * objectness_kd(
-                s_obj, t_obj, bg_floor=bg, valid=v, reach=r)
+                s_obj, t_obj, bg_floor=bg, valid=v, reach=r, tau=tau)
         if score_w > 0:
             losses[f"{s_name}_score"] = score_w * score_kd(
-                s_cls, s_obj, t_cls, t_obj, bg_floor=bg, valid=v, reach=r)
+                s_cls, s_obj, t_cls, t_obj, bg_floor=bg, valid=v, reach=r,
+                tau=tau)
     if not losses:
         # surface config mistakes loudly instead of silently distilling
         # nothing

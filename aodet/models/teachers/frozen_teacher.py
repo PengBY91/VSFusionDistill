@@ -59,9 +59,26 @@ class FrozenTeacher(nn.Module):
                 "without one is randomly initialised (set "
                 "allow_random_teacher=True only in unit tests)")
         if ckpt:
+            import torch
             from mmengine.runner import CheckpointLoader
-            state = CheckpointLoader.load_checkpoint(
-                ckpt, map_location="cpu")
+            # torch>=2.6 defaults torch.load to weights_only=True and
+            # mmengine 0.10.7 passes no override; our training checkpoints
+            # embed HistoryBuffer/numpy objects in meta, so the strict
+            # unpickler rejects them (tools/test.py hits the same wall).
+            # The checkpoint is this repo's own local artifact -> load with
+            # weights_only=False, PyTorch's option (1) for trusted files.
+            _orig_load = torch.load
+
+            def _load_trusted(*a, **k):
+                k.setdefault("weights_only", False)
+                return _orig_load(*a, **k)
+
+            torch.load = _load_trusted
+            try:
+                state = CheckpointLoader.load_checkpoint(
+                    ckpt, map_location="cpu")
+            finally:
+                torch.load = _orig_load
             self.load_teacher_state(state.get("state_dict", state))
         self.model.eval()
         for p in self.parameters():
