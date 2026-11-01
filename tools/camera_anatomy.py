@@ -22,9 +22,18 @@ The pooled class-aware mean over test classes is re-printed at the end so
 the per-recording numbers can be tied back to ap_summary.json (validated
 2026-11-01: B3 0.0502 vs official 0.0499, T-L 0.1248 vs 0.1270).
 
+E11 prereg item 5 (doc/experiments.md §E11): ``--split`` takes a comma-
+separated list of frame_meta split values (train/val/test/val_id under the
+E11 converter; the column is otherwise opaque here) and ``--paired`` points
+at the paired root to read (camera.json + frame_meta.csv).  The per-
+recording / per-class rows are also written as JSON next to the pred dumps
+as ``camera_anatomy.<level>.json`` (rows keyed by recording and category,
+"all" rows pooled over the selection).
+
 Usage::
 
     python tools/camera_anatomy.py work_dirs/<run> [--level d0]
+        [--split test] [--paired data/paired/uxo]
 """
 import argparse
 import csv
@@ -33,8 +42,7 @@ import os
 from collections import defaultdict
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-META = os.path.join(REPO, "data/paired/uxo/frame_meta.csv")
-GT = os.path.join(REPO, "data/paired/uxo/camera.json")
+DEFAULT_PAIRED = os.path.join(REPO, "data/paired/uxo")
 
 
 def iou(a, b):
@@ -74,14 +82,14 @@ def ap50(preds, gt_by_img):
                for i in range(1, len(mrec)) if mrec[i] != mrec[i - 1])
 
 
-def load_world():
+def load_world(paired):
     rec, split, fname = {}, {}, {}
-    with open(META) as f:
+    with open(os.path.join(paired, "frame_meta.csv")) as f:
         for row in csv.DictReader(f):
             cid = int(row["camera_image_id"])
             rec[cid] = row["recording"].split("_")[-1]
             split[cid] = row["split"]
-    with open(GT) as f:
+    with open(os.path.join(paired, "camera.json")) as f:
         cj = json.load(f)
     for i in cj["images"]:
         fname[i["id"]] = i["file_name"]
@@ -91,19 +99,26 @@ def load_world():
     return rec, split, fname, gt_by
 
 
-def analyze(run, level, rec, split, fname, gt_by):
+def _in_sel(split, cid, sel):
+    """sel = None means no split filter; otherwise a set of split values."""
+    return sel is None or split.get(cid) in sel
+
+
+def analyze(run, level, rec, split, fname, gt_by, sel=None, tag="all"):
     pred_file = os.path.join(run, f"pred.camera.{level}.json")
     preds = json.load(open(pred_file))
     by_img = defaultdict(list)
     for p in preds:
         by_img[p["image_id"]].append(p)
 
-    test_recs = sorted({rec[i] for i in gt_by if split[i] == "test"})
-    print(f"\n===== {os.path.basename(run.rstrip('/'))} @ {level} (test) =====")
+    sel_recs = sorted({rec[i] for i in gt_by if _in_sel(split, i, sel)})
+    print(f"\n===== {os.path.basename(run.rstrip('/'))} @ {level} ({tag}) =====")
     pooled = []
-    for r in test_recs:
-        gts = {i: v for i, v in gt_by.items() if split[i] == "test" and rec[i] == r}
-        rec_preds = [p for p in preds if split.get(p["image_id"]) == "test"
+    art_rows = []
+    for r in sel_recs:
+        gts = {i: v for i, v in gt_by.items()
+               if _in_sel(split, i, sel) and rec[i] == r}
+        rec_preds = [p for p in preds if _in_sel(split, p["image_id"], sel)
                      and rec[p["image_id"]] == r]
         # GT geometry profile
         boxes = [b for v in gts.values() for _, b in v]
@@ -122,9 +137,16 @@ def analyze(run, level, rec, split, fname, gt_by):
                  for x in rec_preds if x["category_id"] == c]
             out[f"cat{c}"] = ap50(p, g)
             pooled.append(ap50(p, g))
+            art_rows.append(dict(
+                recording=r, category=f"cat{c}",
+                n_gt=sum(len(v) for v in g.values()), n_pred=len(p),
+                AP50=out[f"cat{c}"]))
         g_agn = {i: [b for _, b in v] for i, v in gts.items()}
         p_agn = [(x["score"], x["image_id"], x["bbox"]) for x in rec_preds]
         out["agnostic"] = ap50(p_agn, g_agn)
+        art_rows.append(dict(recording=r, category="agnostic", n_gt=n,
+                             n_pred=len(rec_preds),
+                             AP50=out["agnostic"]))
         # top-1 localisation + centre offset + category distribution
         top1_ious, dxs, dys = [], [], []
         catdist = defaultdict(int)
@@ -142,13 +164,43 @@ def analyze(run, level, rec, split, fname, gt_by):
         top1_ious.sort()
         k = len(top1_ious)
         med = lambda xs: sorted(xs)[len(xs) // 2] if xs else float("nan")
-        print(f"      AP50 {out}  top1 IoU p50={top1_ious[k // 2]:.2f} "
-              f"(p10={top1_ious[k // 10]:.2f} max={top1_ious[-1]:.2f})  "
-              f"top1 offset med (dx,dy)=({med(dxs):+.0f},{med(dys):+.0f})px  "
-              f"pred cats={dict(sorted(catdist.items()))}")
+        # a recording with GT frames but no predictions on them (possible
+        # once --split covers recordings the pred dump never touched)
+        # has an empty top1 list; the old code crashed there
+        if top1_ious:
+            print(f"      AP50 {out}  top1 IoU p50={top1_ious[k // 2]:.2f} "
+                  f"(p10={top1_ious[k // 10]:.2f} max={top1_ious[-1]:.2f})  "
+                  f"top1 offset med (dx,dy)=({med(dxs):+.0f},{med(dys):+.0f})px  "
+                  f"pred cats={dict(sorted(catdist.items()))}")
+        else:
+            print(f"      AP50 {out}  no top-1 prediction on any GT frame  "
+                  f"pred cats={dict(sorted(catdist.items()))}")
     if pooled:
         print(f"pooled class-aware AP50 (cross-check vs ap_summary): "
               f"{sum(pooled) / len(pooled):.4f}")
+    # pooled rows over the whole split selection (union-eval AP50, the
+    # same convention as the per-recording rows above)
+    sel_gts = {i: v for i, v in gt_by.items() if _in_sel(split, i, sel)}
+    sel_preds = [p for p in preds if _in_sel(split, p["image_id"], sel)]
+    for c in sorted({c for v in sel_gts.values() for c, _ in v}):
+        g = {i: [b for cc, b in v if cc == c] for i, v in sel_gts.items()}
+        p = [(x["score"], x["image_id"], x["bbox"])
+             for x in sel_preds if x["category_id"] == c]
+        art_rows.append(dict(
+            recording="all", category=f"cat{c}",
+            n_gt=sum(len(v) for v in g.values()), n_pred=len(p),
+            AP50=ap50(p, g)))
+    g_agn = {i: [b for _, b in v] for i, v in sel_gts.items()}
+    p_agn = [(x["score"], x["image_id"], x["bbox"]) for x in sel_preds]
+    art_rows.append(dict(recording="all", category="agnostic",
+                         n_gt=sum(len(v) for v in g_agn.values()),
+                         n_pred=len(p_agn), AP50=ap50(p_agn, g_agn)))
+    art_rows = [r for r in art_rows if r["AP50"] is not None]
+    if art_rows:
+        art_path = os.path.join(run, f"camera_anatomy.{level}.json")
+        with open(art_path, "w") as f:
+            json.dump(art_rows, f, indent=2)
+        print(f"camera_anatomy -> {art_path}")
 
 
 def main():
@@ -156,10 +208,19 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("work_dirs", nargs="+", help="run work_dirs with pred.camera dumps")
     ap.add_argument("--level", default="d0", help="degradation level tag (default d0)")
+    ap.add_argument("--split", default="test",
+                    help="comma-separated frame_meta split values to "
+                         "decompose ('all' = no filter)")
+    ap.add_argument("--paired", default=DEFAULT_PAIRED,
+                    help="paired-format root holding camera.json and "
+                         "frame_meta.csv")
     args = ap.parse_args()
-    world = load_world()
+    sel = None if args.split == "all" else {
+        s.strip() for s in args.split.split(",") if s.strip()}
+    tag = "all" if sel is None else args.split
+    world = load_world(args.paired)
     for run in args.work_dirs:
-        analyze(run, args.level, *world)
+        analyze(run, args.level, *world, sel=sel, tag=tag)
 
 
 if __name__ == "__main__":

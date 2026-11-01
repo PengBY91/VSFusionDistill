@@ -14,9 +14,18 @@ per recording (blob-view GT):
   p50 of those predictions vs the GT height p50 (the E07/E08 scale-axis
   mechanism check).
 
+E11 prereg item 5 (doc/experiments.md §E11): ``--split`` takes a comma-
+separated list of frame_meta split values (the E11 converter writes
+train/val/test/val_id; the column is otherwise opaque here), and a second
+CSV ``anatomy.<branch>.<level>_by_class.csv`` decomposes AP50 by
+recording x category on the same GT-bearing frames
+(aodet.evaluation.per_branch_metric.ap_by_group_and_category), with
+"all" rows carrying the pooled and class-agnostic views.
+
     python tools/anatomy.py <run_dir> [--branch sonar_uncoupled] \
         [--level d0] [--paired data/paired/uxo] [--split test] \
-        [--near-row 30] [--near-col 20] [--out run_dir/anatomy.csv]
+        [--near-row 30] [--near-col 20] [--out run_dir/anatomy.csv] \
+        [--out-by-class run_dir/anatomy_by_class.csv]
 
 E08 B0 self-check (2026-10-31 run, old recipe): 100927 class-agnostic
 AP50 0.097, near-GT height p50 22 vs GT 23, cat3 0/443 predictions.
@@ -54,12 +63,29 @@ def _coco_ap50(gt, dets, img_ids):
     return float(evala.stats[1])          # AP@IoU=0.50
 
 
-def _collapse(gt):
-    """Class-agnostic view: one category, annotations kept."""
-    out = {**gt, "categories": [{"id": 1, "name": "object"}],
-           "annotations": [{**a, "category_id": 1}
-                           for a in gt.get("annotations", [])]}
-    return out
+def _by_class_rows(sonar, preds, rec_imgs, anns_by_img):
+    """Per-recording x per-category AP50 rows on the GT-bearing frames.
+
+    Same blob-view GT and the same frame sets as the per-recording rows
+    in main(), so the ``category=all`` AP50 of a recording here equals
+    the AP50 column there (the COCOeval work happens in
+    aodet.evaluation.per_branch_metric; "all" rows additionally carry
+    the class-agnostic AP50).
+    """
+    from aodet.evaluation.per_branch_metric import ap_by_group_and_category
+    group_of_img = {i: rec for rec, imgs in rec_imgs.items() for i in imgs
+                    if i in anns_by_img}
+    if not group_of_img:
+        return []
+    rows = ap_by_group_and_category(
+        sonar, preds, sorted(group_of_img), group_of_img=group_of_img)
+    return [dict(recording=r["group"], category=r["category"],
+                 n_images=r["n_images"], n_gt=r["n_gt"], n_pred=r["n_pred"],
+                 AP50=round(r["AP50"], 4),
+                 **({"AP50_class_agnostic":
+                     round(r["AP50_class_agnostic"], 4)}
+                    if "AP50_class_agnostic" in r else {}))
+            for r in rows]
 
 
 def main():
@@ -69,19 +95,26 @@ def main():
     ap.add_argument("--level", default="d0")
     ap.add_argument("--paired", default="data/paired/uxo")
     ap.add_argument("--split", default="test",
-                    help="frame_meta split of the pred dump "
-                         "('all' = no filter)")
+                    help="comma-separated frame_meta split values of the "
+                         "pred dump ('all' = no filter)")
     ap.add_argument("--near-row", type=int, default=30,
                     help="near-GT window, rows (+-)")
     ap.add_argument("--near-col", type=int, default=20,
                     help="near-GT window, columns (+-)")
     ap.add_argument("--gt-sources", nargs="+", default=["blob"])
     ap.add_argument("--out", default=None)
+    ap.add_argument("--out-by-class", default=None,
+                    help="per-recording x per-class CSV path (default: "
+                         "<out> with _by_class before the extension)")
     args = ap.parse_args()
     args.out = args.out or os.path.join(
         args.run_dir, f"anatomy.{args.branch}.{args.level}.csv")
+    if not args.out_by_class:
+        base, ext = os.path.splitext(args.out)
+        args.out_by_class = base + "_by_class" + ext
 
-    from aodet.evaluation.per_branch_metric import filter_gt_sources
+    from aodet.evaluation.per_branch_metric import (
+        collapse_categories, filter_gt_sources)
 
     pred_path = os.path.join(
         args.run_dir, f"pred.{args.branch}.{args.level}.json")
@@ -92,7 +125,8 @@ def main():
     with open(os.path.join(args.paired, "frame_meta.csv"), newline="") as f:
         frames = [dict(r) for r in csv.DictReader(f)]
     if args.split != "all":
-        frames = [fr for fr in frames if fr["split"] == args.split]
+        wanted = {s.strip() for s in args.split.split(",") if s.strip()}
+        frames = [fr for fr in frames if fr["split"] in wanted]
 
     cats = {c["id"]: c["name"] for c in _load(
         os.path.join(args.paired, "sonar.json"))["categories"]}
@@ -120,10 +154,10 @@ def main():
         gt_rec = {**gt_rec,
                   "images": [im for im in sonar["images"] if im["id"] in imgs]}
         dets_rec = [d for d in preds if d["image_id"] in imgs]
-        dets_agn = [{**d, "category_id": 1} for d in dets_rec]
+        gt_agn, dets_agn = collapse_categories(gt_rec, dets_rec)
 
         ap50 = _coco_ap50(gt_rec, dets_rec, imgs)
-        ap50_agn = _coco_ap50(_collapse(gt_rec), dets_agn, imgs)
+        ap50_agn = _coco_ap50(gt_agn, dets_agn, imgs)
 
         # category distribution over ALL predictions in the recording
         cat_counts = {}
@@ -198,6 +232,15 @@ def main():
                   f"top1_near={r['n_top1_near']}/{r['n_gt_frames']} "
                   f"top1_h={r['top1_h_p50']:.1f}/{r['top1_gt_h_p50']:.1f}")
         print(f"anatomy -> {args.out}")
+        by_class = _by_class_rows(sonar, preds, rec_imgs, anns_by_img)
+        if by_class:
+            fields = ["recording", "category", "n_images", "n_gt", "n_pred",
+                      "AP50", "AP50_class_agnostic"]
+            with open(args.out_by_class, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fields)
+                w.writeheader()
+                w.writerows(by_class)
+            print(f"anatomy_by_class -> {args.out_by_class}")
     else:
         print("no recordings with GT; nothing written")
 

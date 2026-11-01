@@ -12,6 +12,14 @@ The DetDataSample metainfo carries the COCO image id of each side (set by
 AOPackPairedInputs from frame_meta.csv), and category indices in
 predictions are the head's label space = position in the GT json's
 categories list (PairedSonarCameraDataset maps them the same way).
+
+E11 prereg item 5 (doc/experiments.md §E11): ``--split`` restricts
+evaluation (and the prediction dumps) to frames whose frame_meta ``split``
+value is in the given comma-separated list — the CLI set replaces the
+config's single-value dataset split filter (all loaded frames are still
+inferred).  ``ap_breakdown.json`` is written next to ap_summary.json with
+the per-recording, per-class decomposition of every pooled number
+(ap_by_group_and_category; recording taken from frame_meta).
 """
 
 import argparse
@@ -34,6 +42,32 @@ from aodet.cuda_compat import install_nms_cpu_fallback  # noqa: E402
 
 # branch name -> GT side (both sonar heads evaluate against sonar.json)
 _SIDE = {"camera": "camera", "sonar": "sonar", "sonar_uncoupled": "sonar"}
+
+
+def filter_infos_by_split(infos, splits):
+    """Keep data-info dicts whose frame_meta ``split`` value is in splits.
+
+    ``split`` is an opaque string column (train/val/test today; the E11
+    converter adds val/val_id), so callers pass the raw values through.
+    """
+    wanted = {str(s) for s in splits}
+    return [d for d in infos
+            if str((d.get("meta") or {}).get("split", "")) in wanted]
+
+
+def recording_by_image_id(infos, side):
+    """coco image id -> frame_meta recording name for one GT side.
+
+    Frames whose meta row carries no recording value are absent from the
+    map; the breakdown then pools them into the "all" rows only.
+    """
+    out = {}
+    for d in infos:
+        iid = d.get(f"coco_{side}_image_id")
+        rec = str((d.get("meta") or {}).get("recording", "") or "")
+        if iid is not None and rec:
+            out[int(iid)] = rec
+    return out
 
 
 def to_coco_results(pred_samples, cat_id_map):
@@ -68,6 +102,13 @@ def main():
                         default=["d0", "d1", "d2", "d3", "d4", "dinf"])
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available()
                         else "cpu")
+    parser.add_argument("--split", default=None,
+                        help="comma-separated frame_meta split values to "
+                             "evaluate on (e.g. 'val,val_id'); replaces the "
+                             "config's dataset split filter (all loaded "
+                             "frames are still inferred; predictions "
+                             "outside these splits are dropped from the "
+                             "dumps); default: no extra filtering")
     parser.add_argument(
         "--cfg-options", nargs="+", action=DictAction, default=None,
         help="override config keys, e.g. the LOO-CV recording filter")
@@ -104,11 +145,20 @@ def main():
     dl_cfg = cfg.test_dataloader
     dl_cfg.shuffle = False
     root = dl_cfg.dataset.data_root
+    split_set = None
+    if args.split:
+        split_set = {s.strip() for s in args.split.split(",") if s.strip()}
+        # the CLI split set replaces the config's single-value dataset
+        # filter (split=None loads every split; infos/preds are filtered
+        # below, so the dumps only carry the requested frames)
+        dl_cfg.dataset.split = None
 
     from aodet.evaluation.per_branch_metric import (
-        blob_eval_img_ids, evaluate_prediction_file, filter_gt_sources)
+        ap_by_group_and_category, blob_eval_img_ids, evaluate_prediction_file,
+        filter_gt_sources)
 
     summary = {}
+    breakdown = []
     for level in args.levels:
         dl_cfg.dataset.deg_level = level
         dl = Runner.build_dataloader(dl_cfg)
@@ -116,6 +166,8 @@ def main():
         # mmengine serializes dataset items (data_list is emptied), so read
         # per-item info through the public accessor in both modes
         infos = [dataset.get_data_info(i) for i in range(len(dataset))]
+        if split_set is not None:
+            infos = filter_infos_by_split(infos, split_set)
         # per-side evaluated image ids + label-space -> COCO category ids
         img_ids, cat_maps = {}, {}
         for side in ("camera", "sonar"):
@@ -127,6 +179,8 @@ def main():
                                    is not None)
             cat_maps[side] = {i: c["id"] for i, c in
                               enumerate(g["categories"])}
+        rec_maps = {side: recording_by_image_id(infos, side)
+                    for side in ("camera", "sonar")}
         preds = None
         for data in dl:
             prepped = model.data_preprocessor(data, False)
@@ -142,8 +196,14 @@ def main():
         for branch, samples in preds.items():
             side = _SIDE[branch]
             path = os.path.join(out_dir, f"pred.{branch}.{level}.json")
+            results = to_coco_results(samples, cat_maps[side])
+            if split_set is not None:
+                keep = set(img_ids[side])
+                results = [r for r in results if r["image_id"] in keep]
             with open(path, "w") as f:
-                json.dump(to_coco_results(samples, cat_maps[side]), f)
+                json.dump(results, f)
+            with open(path) as f:  # evaluate the saved file, as above
+                saved = json.load(f)
             with open(os.path.join(root, f"{side}.json")) as f:
                 gt = json.load(f)
             variants = [("all", gt, img_ids[side])]
@@ -158,11 +218,24 @@ def main():
                 tag = f" gt={gt_name}" if gt_name != "all" else ""
                 print(f"[{branch} @ {level}{tag}] AP={m['AP']:.4f} "
                       f"AP50={m['AP50']:.4f} AR@100={m['AR@100']:.4f}")
+                for r in ap_by_group_and_category(
+                        gt_v, saved, ids,
+                        group_of_img=rec_maps[side] or None):
+                    breakdown.append({"branch": branch, "level": level,
+                                      "gt": gt_name,
+                                      "recording": r.pop("group"), **r})
 
     # machine-readable summary next to the prediction files
     with open(os.path.join(args.out_dir, "ap_summary.json"), "w") as f:
         json.dump([{"branch": b, "level": lv, "gt": g, **m}
                    for (b, lv, g), m in sorted(summary.items())], f, indent=2)
+    # per-recording x per-class decomposition of the same numbers
+    # ("all" recording/category rows are the pooled views)
+    breakdown.sort(key=lambda r: (r["branch"], r["level"], r["gt"],
+                                  r["recording"] == "all", r["recording"],
+                                  r["category"] == "all", r["category"]))
+    with open(os.path.join(args.out_dir, "ap_breakdown.json"), "w") as f:
+        json.dump(breakdown, f, indent=2)
 
 
 if __name__ == "__main__":
