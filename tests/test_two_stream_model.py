@@ -224,6 +224,7 @@ def test_kd_path_with_frozen_teacher():
     student = _model(
         fusion=dict(type="NoneFusion"),
         distillation=dict(teacher=teacher_cfg, teacher_input="clear",
+                          allow_random_teacher=True,
                           obj_weight=1.0, cls_weight=0.0))
     data = _batch(b=2, with_clear=True)
     inputs, samples = _prep(student, data, training=True)
@@ -264,6 +265,7 @@ def _kd_student(**kd):
         camera_backbone=_stream_cfg()[0], camera_neck=_stream_cfg()[1],
         camera_head=_stream_cfg()[2], uncoupled_sonar_head=shd)
     cfg = dict(teacher=teacher_cfg, teacher_input="clear",
+               allow_random_teacher=True,
                obj_weight=1.0, score_weight=0.0)
     cfg.update(kd)
     return _model(fusion=dict(type="CrossAttnFusion",
@@ -431,3 +433,76 @@ def test_cross_plane_mil_nonlinear_bearing_map():
     loss, _ = crit([[(150.0, 0.0, 170.0, 10.0)]], [torch.tensor([1.0])],
                    [obj], camera_img_w=320)
     assert loss.item() < 0.05
+
+
+# -- review 2026-11-01 regressions ----------------------------------------
+
+def test_frozen_teacher_requires_checkpoint():
+    """#1: no checkpoint -> random teacher (init_weights never reaches
+    it), so building one must fail unless explicitly allowed."""
+    from aodet.models.teachers.frozen_teacher import FrozenTeacher
+    sbb, snc, shd = _stream_cfg()
+    tcfg = dict(type="TwoStreamYOLOX", sonar_backbone=sbb, sonar_neck=snc,
+                uncoupled_sonar_head=shd)
+    with pytest.raises(ValueError, match="teacher_checkpoint"):
+        FrozenTeacher(dict(teacher=tcfg))
+    FrozenTeacher(dict(teacher=tcfg, allow_random_teacher=True))
+
+
+def test_clear_teacher_input_does_not_fall_back():
+    """#2: teacher_input='clear' without camera_clear must raise, not
+    silently feed the degraded view (M2/M3 -> M1)."""
+    student = _kd_student()
+    data = _batch(b=2, with_clear=False)
+    inputs, samples = _prep(student, data, training=True)
+    assert inputs["camera_clear"] is None
+    student.train()
+    with pytest.raises(RuntimeError, match="camera_clear"):
+        student.loss(inputs, samples)
+
+
+def test_teacher_fusion_masks_invalid_camera():
+    """#3: the teacher's fusion honours camera_valid, so a masked sample
+    equals the no-camera path, as in the teacher's own training."""
+    from aodet.models.teachers.frozen_teacher import FrozenTeacher
+    sbb, snc, shd = _stream_cfg()
+    tcfg = dict(type="TwoStreamYOLOX", sonar_backbone=sbb, sonar_neck=snc,
+                camera_backbone=_stream_cfg()[0],
+                camera_neck=_stream_cfg()[1], fused_sonar_head=shd,
+                fusion=dict(type="CrossAttnFusion",
+                            cam_channels=[64, 64, 64],
+                            sonar_channels=[64, 64, 64], embed_dim=64,
+                            num_heads=4))
+    t = FrozenTeacher(dict(teacher=tcfg, allow_random_teacher=True))
+    fusion = t.model.fusion
+    with torch.no_grad():
+        for g in fusion.gamma:
+            g.fill_(1.0)               # make the camera term non-trivial
+    son = torch.rand(2, 3, *IMG) * 255
+    cam = torch.rand(2, 3, *IMG) * 255
+    valid = torch.tensor([True, False])
+    out = t.forward_head_outputs(cam, son, camera_valid=valid)
+    ref = t.forward_head_outputs(None, son)
+    full = t.forward_head_outputs(cam, son)
+    obj_m, obj_ref, obj_full = (o["sonar"][2][0] for o in (out, ref, full))
+    torch.testing.assert_close(obj_m[1], obj_ref[1])
+    torch.testing.assert_close(obj_m[0], obj_full[0])
+    assert not torch.allclose(obj_full[1], obj_ref[1])
+
+
+def test_cross_plane_mil_cell_centre_columns():
+    """#8: a window centred on bearing 0 maps to the centre cells under
+    the (j+0.5)/w convention."""
+    m0 = M0Mapping(slope=30.0, intercept=-15.0, residual_std=0.0,
+                   camera_hfov_deg=30.0, sonar_fov_deg=30.0)
+    crit = CrossPlaneMILLoss(m0=m0, bearing_fov_deg=30.0, topk=1,
+                             k_margin=0.0, base_margin_deg=0.0)
+    w = 10
+    for col in range(w):
+        obj = torch.full((1, 1, 4, w), -6.0)
+        obj[0, 0, 2, col] = 6.0
+        # a camera box whose bearing interval is exactly cell `col`
+        x1, x2 = col / w * 320, (col + 1) / w * 320
+        loss, n = crit([[(x1, 0.0, x2, 10.0)]], [torch.tensor([1.0])],
+                       [obj], camera_img_w=320)
+        assert n.item() == 1 and loss.item() < 0.01, col

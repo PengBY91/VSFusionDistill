@@ -8,6 +8,10 @@ from aodet.models.losses.branch_kd import (  # noqa: E402
     branch_kd_losses, objectness_kd, score_kd)
 
 
+def _branch(cls, obj):
+    return ([cls], [torch.zeros(cls.shape[0], 4, *cls.shape[-2:])], [obj])
+
+
 def _one_fg(size=20, fg=(10, 10)):
     t = torch.full((1, 1, size, size), -8.0)
     t[0, 0, fg[0], fg[1]] = 8.0
@@ -67,3 +71,55 @@ def test_branch_kd_routes_and_errors():
     with pytest.raises(RuntimeError):
         branch_kd_losses(student, {"camera": teacher["sonar"]},
                          cfg=dict(routes={"sonar_uncoupled": "sonar"}))
+
+
+# -- review 2026-11-01 regressions ----------------------------------------
+
+def test_kd_terms_are_exactly_zero_at_match():
+    """#6: KL form, so a perfect match is 0, not the teacher entropy."""
+    t_obj = [torch.randn(2, 1, 8, 8)]
+    t_cls = [torch.randn(2, 3, 8, 8)]
+    assert abs(float(objectness_kd([t_obj[0].clone()], t_obj))) < 1e-5
+    assert abs(float(score_kd([t_cls[0].clone()], [t_obj[0].clone()],
+                              t_cls, t_obj))) < 1e-4
+
+
+def test_score_kd_runs_under_autocast():
+    """#7: no F.binary_cross_entropy inside an autocast region."""
+    t_obj, t_cls = [_one_fg()], [torch.zeros(1, 3, 20, 20)]
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        v = score_kd([t_cls[0].clone().requires_grad_()],
+                     [torch.zeros(1, 1, 20, 20, requires_grad=True)],
+                     t_cls, t_obj)
+    assert v.dtype == torch.float32 and torch.isfinite(v)
+
+
+def test_reach_gates_only_uncoupled_route_and_score_term():
+    """#4: reach applies to the sonar-only head's obj AND score terms, and
+    never to the fused head (which sees the camera)."""
+    t_obj, t_cls = _one_fg(), torch.zeros(1, 3, 20, 20)
+    t_cls[0, 1, 10, 10] = 6.0
+    s_obj = torch.full((1, 1, 20, 20), -8.0)        # student misses it
+    s_cls = torch.zeros(1, 3, 20, 20)
+    teacher = {"sonar": _branch(t_cls, t_obj)}
+    student = {"sonar": _branch(s_cls, s_obj),
+               "sonar_uncoupled": _branch(s_cls.clone(), s_obj.clone())}
+    cfg = dict(routes={"sonar": "sonar", "sonar_uncoupled": "sonar"},
+               score_weight=1.0)
+    unreachable = [torch.zeros(1, 1, 20, 20)]     # camera-only target
+    free = branch_kd_losses(student, teacher, cfg=cfg)
+    gated = branch_kd_losses(student, teacher, cfg=cfg, reach=unreachable)
+    for k in ("sonar_obj", "sonar_score"):
+        torch.testing.assert_close(gated[k], free[k])
+    for k in ("sonar_uncoupled_obj", "sonar_uncoupled_score"):
+        assert gated[k] < 0.2 * free[k], (k, gated[k], free[k])
+
+
+def test_reach_keeps_background_floor():
+    """#5: reach must not erase the background push-down weight."""
+    t = [torch.full((1, 1, 20, 20), -8.0)]           # no target anywhere
+    s = [t[0].clone()]
+    s[0][0, 0, 0, 0] = 8.0                           # one false alarm
+    zero = [torch.zeros(1, 1, 20, 20)]
+    torch.testing.assert_close(objectness_kd(s, t, reach=zero),
+                               objectness_kd(s, t))

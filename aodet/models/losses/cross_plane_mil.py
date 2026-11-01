@@ -145,8 +145,13 @@ class CrossPlaneMILLoss(torch.nn.Module):
                 clip = window_fov_overlap(window, self.m0)
                 if clip is None:
                     continue
-                a = float(to_norm(clip[0])) * (w - 1)
-                b_ = float(to_norm(clip[1])) * (w - 1)
+                # cell-centre convention: column j covers normalised
+                # [j/w, (j+1)/w) with centre (j+0.5)/w, the same one the
+                # bearing tables of BearingAxialFusion use (review
+                # 2026-11-01 #8; the old ·(w−1) endpoint map was off by up
+                # to half a cell)
+                a = float(to_norm(clip[0])) * w - 0.5
+                b_ = float(to_norm(clip[1])) * w - 0.5
                 c1 = max(int(math.floor(min(a, b_))), 0)
                 c2 = min(int(math.ceil(max(a, b_))) + 1, w)
                 if c2 <= c1:

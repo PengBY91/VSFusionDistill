@@ -71,7 +71,10 @@ class TwoStreamYOLOX(BaseDetector):
                  obj_weight=..., score_weight=..., bg_floor=...,
                  feat_weight=..., student_feat_channels=[...],
                  teacher_feat_channels=[...],
-                 reach=dict(k=..., theta=...) or None).
+                 reach=dict(k=..., theta=...) or None,
+                 reach_routes=('sonar_uncoupled',)).
+            ``teacher_checkpoint`` is required; ``teacher_input='clear'``
+            raises when the batch has no clear view (review 2026-11-01).
     """
 
     def __init__(
@@ -234,13 +237,27 @@ class TwoStreamYOLOX(BaseDetector):
         from aodet.models.losses.branch_kd import (branch_kd_losses,
                                                     feature_kd_loss)
         cfg = self.distillation_cfg
-        clear = batch_inputs.get("camera_clear")
-        t_in = clear if (cfg.get("teacher_input", "clear") == "clear"
-                         and clear is not None) else \
-            batch_inputs.get("camera")
+        mode = cfg.get("teacher_input", "clear")
+        if mode not in ("clear", "degraded"):
+            raise ValueError(f"unknown teacher_input {mode!r}")
+        if mode == "clear":
+            t_in = batch_inputs.get("camera_clear")
+            t_valid = None      # the clear view always carries signal
+            if t_in is None and \
+                    self.teacher.model.camera_backbone is not None:
+                # no silent fallback to the degraded view: that would turn
+                # an M2/M3 run into M1 (review 2026-11-01 #2)
+                raise RuntimeError(
+                    "teacher_input='clear' but the batch has no "
+                    "camera_clear (is AOStudentCameraView in the pipeline?)")
+        else:
+            t_in = batch_inputs.get("camera")
+            # D∞ black frames must be masked in the teacher's fusion too
+            t_valid = cam_valid
         with torch.no_grad():
             t_out, t_feats = self.teacher.forward_head_outputs(
-                camera=t_in, sonar=batch_inputs["sonar"], return_feats=True)
+                camera=t_in, sonar=batch_inputs["sonar"], return_feats=True,
+                camera_valid=t_valid)
 
         valid = {}
         if cam_valid is not None:
@@ -261,6 +278,11 @@ class TwoStreamYOLOX(BaseDetector):
         if fw > 0 and self.kd_adapters is not None \
                 and "sonar" in t_out:
             fg = [o.sigmoid() for o in t_out["sonar"][2]]
+            if reach is not None:
+                # the student side is the sonar-only neck: camera-only
+                # targets must not be pulled in here either (review
+                # 2026-11-01 #4)
+                fg = [f * r for f, r in zip(fg, reach)]
             losses["kd/loss_sonar_feat"] = fw * feature_kd_loss(
                 son_feats, t_feats["sonar_fused"], self.kd_adapters, fg=fg)
         return losses

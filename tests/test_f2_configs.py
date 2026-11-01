@@ -66,15 +66,18 @@ def _sonar_weight(model_cfg):
     total = 0.0
     if model_cfg.get("uncoupled_sonar_head"):
         total += w["uncoupled_sonar"]
-    if model_cfg.get("fused_sonar_head"):
+    # a detached fusion input stops the fused head's gradient before the
+    # sonar backbone (review 2026-11-01 #9)
+    if model_cfg.get("fused_sonar_head") and \
+            not model_cfg.get("fusion_detach_sonar", False):
         total += w["fused_sonar"]
     return total
 
 
 @pytest.mark.parametrize("path", F2_CONFIGS)
 def test_sonar_supervision_weight_matches_b0(path):
-    """Review 2026-10-31 §1.3: both sonar heads share the sonar backbone,
-    so their weights must sum to B0's single-head weight."""
+    """Review 2026-10-31 §1.3: the sonar-head weights that reach the sonar
+    backbone must sum to B0's single-head weight."""
     b0 = Config.fromfile(F2_CONFIGS[0]).model
     assert _sonar_weight(Config.fromfile(path).model) == \
         pytest.approx(_sonar_weight(b0))

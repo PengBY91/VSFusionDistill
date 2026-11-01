@@ -36,9 +36,14 @@ class FrozenTeacher(nn.Module):
     cfg keys:
         teacher: model config dict (usually TwoStreamYOLOX with YOLOX-L
             streams).
-        teacher_checkpoint: optional checkpoint path loaded after build.
-            Loading is strict (review 2026-10-31 §3.5): a key mismatch
-            raises instead of silently leaving random weights.
+        teacher_checkpoint: checkpoint path loaded after build.  Required
+            (review 2026-11-01 #1): mmengine's ``init_weights`` never
+            recurses into this plain ``nn.Module``, so without a checkpoint
+            the teacher would stay randomly initialised — not even the
+            backbone's ``init_cfg=Pretrained`` fires.  Loading is strict
+            (review 2026-10-31 §3.5): a key mismatch raises.
+        allow_random_teacher: unit-test escape hatch; True skips the
+            checkpoint requirement.
         teacher_input: 'clear' | 'degraded' (consumed by the student, see
             TwoStreamYOLOX._kd_losses).
     """
@@ -48,6 +53,11 @@ class FrozenTeacher(nn.Module):
         from mmdet.registry import MODELS as DET_MODELS
         self.model = DET_MODELS.build(cfg["teacher"])
         ckpt = cfg.get("teacher_checkpoint")
+        if not ckpt and not cfg.get("allow_random_teacher", False):
+            raise ValueError(
+                "distillation.teacher_checkpoint is required: a teacher "
+                "without one is randomly initialised (set "
+                "allow_random_teacher=True only in unit tests)")
         if ckpt:
             from mmengine.runner import CheckpointLoader
             state = CheckpointLoader.load_checkpoint(
@@ -76,8 +86,13 @@ class FrozenTeacher(nn.Module):
         camera: Optional[torch.Tensor],
         sonar: torch.Tensor,
         return_feats: bool = False,
+        camera_valid: Optional[torch.Tensor] = None,
     ):
         """Head outputs per branch on the teacher's own inputs.
+
+        ``camera_valid`` (B,) is forwarded to the fusion module so a
+        teacher fed the student's degraded view (M1) masks D∞ black frames
+        exactly as it did in its own training (review 2026-11-01 #3).
 
         Returns {'camera': (cls, bbox, obj), 'sonar': ...,
         'sonar_uncoupled': ...} with per-level lists of tensors — the
@@ -97,7 +112,8 @@ class FrozenTeacher(nn.Module):
         if model.uncoupled_sonar_head is not None:
             out["sonar_uncoupled"] = model.uncoupled_sonar_head(son_feats)
         if model.fused_sonar_head is not None:
-            fused = model.fusion(cam_feats, son_feats)
+            fused = model.fusion(cam_feats, son_feats,
+                                 camera_valid=camera_valid)
             out["sonar"] = model.fused_sonar_head(fused)
             feats["sonar_fused"] = fused
         elif "sonar_uncoupled" in out:

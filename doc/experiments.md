@@ -397,6 +397,17 @@ train 自评（d0，blob 口径）：E09a AP50=1.000 / E09b=0.997（均过 0.80 
 - 蒸馏：此前 KD 损失键名不含 `loss`，不会被 mmengine 反传；尚无蒸馏实验受影响（M 系列未启动）。
 - 声呐投影标定（审查 §7）：瞄准模式（yaw = 2）在直线几何下有近退化的镜像解，且原来只用对 P 不敏感的相机代价挑盆地。现已加"目标在声呐头下方"的约束，并对每个位置假设都精化后按联合代价选优。E03 中 180722、123500 为瞄准模式，GT 可能变化：需在有数据的机器上不带 `--use-cache` 重新标定，并与旧 `projection_report.json` 逐段比较 P、b、dcol；如有变化，新开实验编号。
 
+### 3.x.0 二次审查修复（2026-11-01，分支 `fix/review-2026-11-01`）
+
+改动行为的修复如下，均不影响已出数实验（M 系列未启动；detach 臂未训练）：
+
+- 教师必须给 `teacher_checkpoint`，否则报错。之前不给时教师为随机权重：`FrozenTeacher` 是普通 `nn.Module`，mmengine 的 `init_weights` 不会递归进去，连 COCO 预训练都不会加载。
+- `teacher_input='clear'` 缺 clear 图时报错，不再静默改用退化图（否则 M2/M3 会变成 M1）。教师融合模块现在接收 `camera_valid`（M1 下 D∞ 黑帧与教师自身训练一致地被 mask）。
+- 可达性权重只作用于 `sonar_uncoupled` 路由（`reach_routes` 可配），并同时作用于 obj、score、特征三项。此前 score 项和特征项绕过 reach，把相机独有目标蒸了回去；融合头路由则被误加了 reach。reach 改为先乘前景权重再取 `bg_floor`，背景压虚警的权重在各路由上一致。
+- obj / score KD 改为 Bernoulli KL（= 软目标 BCE − 教师熵），梯度不变，完全匹配时为 0；此后记录的"KD/检测损失比值"不再含教师熵常数。score KD 不再调用 `F.binary_cross_entropy`（CUDA autocast 下会报错）。
+- `s0_cross_attn_detach_yoloxs`：融合输入 detach 后只有 uncoupled 头的梯度到达声呐骨干，权重改为 uncoupled 1.0 / fused 0.5，使骨干监督与 B0 对等（原 0.5 只有 B0 的一半）。
+- L_xp 的方位→列映射改为格心约定（`·w − 0.5`），与 `BearingAxialFusion` 一致。
+
 ### 3.x.1 结论再审（2026-11-01，受影响实验重跑前逐条过账）
 
 审查合入 + E08 勘误后，对全部在册结论逐条复核。状态分四档：维持（证据与审查无关）、降级（现象真、归因开放）、撤回（证据链被审查切断）、待对拍（依赖重标定结果；2026-11-01 重标定落定，该档已全部转"已对拍"并回填结果）。
