@@ -8,7 +8,10 @@
 # Log:   data/raw/uxo-full/download.log
 set -uo pipefail
 cd "$(dirname "$0")/.."
-DEST=data/raw/uxo-full
+# destination is overridable (2026-11-02: moved off the WSL ext4 disk,
+# which grows the C: vhdx, onto the Windows D: drive):
+#   UXO_FULL_DIR=/mnt/d/pby/uxo-full bash tools/download_uxo_full.sh
+DEST=${UXO_FULL_DIR:-data/raw/uxo-full}
 mkdir -p "$DEST"
 BASE=https://zenodo.org/api/records/13778485/files
 # md5 checksums from the Zenodo record metadata (fetched 2026-11-01)
