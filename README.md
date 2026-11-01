@@ -149,7 +149,7 @@ Stage notes:
 | `aodet/geometry/` | M₀ camera→bearing mapping + flip mirroring (`m0.py`), ARIS beam table |
 | `configs/` | `_base_` (model/dataset/schedule/runtime) + `f2/` S0-lite configs (B0, cross-attn) |
 | `tools/` | `train.py`, `test.py` (per-branch D0–D∞ scan, per-split / per-recording / per-class output), `project_uxo_sonar.py` (calibration + projection, fingerprint-keyed cache), `uxo_inventory.py` / `split_uxo_recordings.py` (E11 recording inventory & frozen split), `anatomy.py` / `camera_anatomy.py` (per-recording, per-class dissection), `download_uxo_full.sh` (full-UXO download + md5), `check_gt_validity.py`, `make_degraded_testsets.py`, `run_seeds.sh`, `run_loocv.sh`, `collect_results.py`, `correlation_table.py`, third-party pinning, RSFusionDet watch |
-| `tests/` | 207 tests (collected 2026-11-02): degradation physics, format round-trip, geometry, metrics (incl. known-answer tests), model, UXO converter / projection / calibration cache, E11 tools (inventory / split / per-split eval), end-to-end pipeline & tools |
+| `tests/` | 216 tests (collected 2026-11-02): degradation physics, format round-trip, geometry, metrics (incl. known-answer tests), model, UXO converter / projection / calibration cache, E11 tools (inventory / split / per-split eval), resume compatibility, end-to-end pipeline & tools |
 | `env/` | install scripts + `ENVIRONMENT.md` version record |
 | `doc/` | topic plan, 2026-11-01 review `f2-rethink-2026-11-01.md`, experiment ledger `experiments.md`, narrative logs `doc/logs/`, code reviews `doc/reviews/`, evidence archive `doc/evidence/` |
 | `data/paired/` | converted paired data (UXO: 2573 pairs + projection report & contact sheet) |
@@ -158,7 +158,7 @@ Stage notes:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # 207 tests collected (2026-11-02)
+python -m pytest tests/ -q          # 216 tests collected (2026-11-02)
 
 # S0-lite (UXO sample already converted to data/paired/uxo/)
 python tools/train.py configs/f2/s0_b0_sonar_only_yoloxs.py --seed 0
@@ -190,9 +190,9 @@ Per-branch AP by degradation level from saved prediction files (`tools/test.py` 
 
 ## 9. Status (2026-11-02)
 
-- Environment and pipeline: COCO YOLOX-S reproduction gate passed (AP 40.30 vs official 40.5); the local RTX 5090 runs `.venv-gpu` (torch 2.7.1+cu128, see `env/ENVIRONMENT.md`; resuming a run requires `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`).
+- Environment and pipeline: COCO YOLOX-S reproduction gate passed (AP 40.30 vs official 40.5); the local RTX 5090 runs `.venv-gpu` (torch 2.7.1+cu128, see `env/ENVIRONMENT.md`; torch >= 2.6's weights_only default is handled by the scoped wrapper in `aodet/torch_load_compat`, so resume no longer depends on an env var).
 - Data: the UXO sample is converted to `data/paired/uxo/` (2573 pairs; recalibrated after the mirror-basin fix to blob 1319 / projected 1254), training GT blob-only. Full-UXO download in transit: data_processed.7z (57 GiB) passed md5 (11-02 05:32); the two 16 GB export packages follow (`data/raw/uxo-full/download.log`).
 - Experiments: E01–E10 in `doc/experiments.md`. E10 is downgraded to a directional reading after the review; of the τ ablation, tau1 has finished and tau4 is resuming from epoch_10 after an incident (see `doc/logs/2026-11-02-tau4-resume-weights-only.md`); both arms are recorded but not interpreted.
-- Next: E11 (full-UXO class-balanced split + B0/B2/B3 × 3 seeds) is preregistered and all code prerequisites have landed (21f1345 + 6e2043a, 207 tests green). Pipeline once data lands: unpack → adapter check on 2 recordings → convert → calibrate (fingerprint cache, restartable) → inventory → frozen split → data gate 0. Engineering item to close: port the scoped weights_only=False wrapper into the train/resume path (incident log, follow-up 1).
+- Next: E11 (full-UXO class-balanced split + B0/B2/B3 × 3 seeds) is preregistered and all code prerequisites have landed (21f1345 + 6e2043a). Pipeline once data lands: unpack → adapter check on 2 recordings → convert → calibrate (fingerprint cache, restartable) → inventory → frozen split → data gate 0. The train-side resume weights_only fix is closed out (train/test share `aodet/torch_load_compat`, with a save-then-resume smoke test; see the incident log).
 - Open decisions: how the paper is positioned if E11 lands in the ceiling or floor band (review §3.5, §7); confirmation that spend under unmet G1/G2 counts within G0 (review §7).
 - RSFusionDet repo still empty (checked biweekly, `doc/logs/rsfusiondet-watch.log`).

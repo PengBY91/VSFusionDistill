@@ -28,6 +28,6 @@
 ## 处置与待办
 
 - 当前：tau4 由 `/tmp/tau4_resume.sh`（setsid 脱离会话）驱动，环境变量 + resume=True，链尾接扫描与 collect；出数按路线图只入账不解读。
-- 待办一（E11 数据闸门前必须完成）：把 test.py 的 scoped `weights_only=False` 包装移植到 train/resume 路径（信任本地自产 checkpoint），替代环境变量方案；补一个"保存 1 epoch 后 resume 成功"的冒烟测试。E11 三臂 × 3 种子的长训练必然用到 resume，此路径必须有测试覆盖。
+- 待办一已收口（2026-11-02 同日）：新增 `aodet/torch_load_compat.py::trusted_torch_load()`，scoped 默认 `weights_only=False`，train.py（包住 `runner.train()`，覆盖 resume 与 load_from）与 test.py 共用，替代环境变量方案；显式传参不覆盖，`TORCH_FORCE_WEIGHTS_ONLY_LOAD=1` 可强制回到沙箱。`tests/test_torch_load_compat.py` 做 save-then-resume 冒烟（走 `CheckpointLoader` 同路径，torch 2.7.1 环境 6/6 过，含 < 2.6 版本门控的负对照）。resume 仍需 `--cfg-options resume=True`（mmengine 仅在 cfg.resume 为真时 auto-resume）。
 - 待办二：本事故的流程教训已进复盘 §8（无人值守链的 .ok 标记、重试两次停链、启动后人工确认、断点先冒烟）。
 - 关联：`work_dirs/tau_ablation_chain.log`（relaunch 1–4 全程）、`env/ENVIRONMENT.md` GPU 节、`doc/experiments.md` E10 注记。

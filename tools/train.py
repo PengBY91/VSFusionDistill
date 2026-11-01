@@ -15,18 +15,6 @@ from mmengine.config import Config, DictAction
 from mmengine.registry import init_default_scope
 from mmengine.runner import Runner
 
-# torch>=2.6 defaults torch.load to weights_only=True, which rejects the
-# HistoryBuffer objects mmengine writes into its checkpoints (log_scalars
-# meta) -- resume() then dies with UnpicklingError.  Allowlist it for our
-# own work-dir checkpoints (trusted; the only other load is the official
-# COCO-pretrained state dict, which is plain tensors).
-try:
-    import torch.serialization
-    from mmengine.logging import HistoryBuffer
-    torch.serialization.add_safe_globals([HistoryBuffer])
-except Exception:  # pragma: no cover - older torch without safe_globals
-    pass
-
 
 def _git_hash() -> str:
     try:
@@ -53,6 +41,8 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
 
+    from aodet.torch_load_compat import trusted_torch_load
+
     cfg = Config.fromfile(args.config)
     init_default_scope(cfg.get("default_scope", "mmdet"))
 
@@ -69,7 +59,13 @@ def main():
     with open(os.path.join(runner.work_dir, "run_meta.txt"), "w") as f:
         f.write(f"config={args.config}\nseed={args.seed}\n"
                 f"git={_git_hash()}\npython={sys.version}\n")
-    runner.train()
+    # resume() and init-weight loads go through torch.load inside
+    # runner.train(); mmengine 0.10.7 passes no weights_only override and
+    # torch>=2.6 defaults it to True, which rejects the HistoryBuffer /
+    # numpy objects in our own checkpoints (2026-11-02 tau4 incident).
+    # All loads here are trusted local artifacts -> scoped default flip.
+    with trusted_torch_load():
+        runner.train()
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import aodet.datasets  # noqa: E402,F401
 import aodet.models  # noqa: E402,F401
 from aodet.cuda_compat import install_nms_cpu_fallback  # noqa: E402
+from aodet.torch_load_compat import trusted_torch_load  # noqa: E402
 
 # branch name -> GT side (both sonar heads evaluate against sonar.json)
 _SIDE = {"camera": "camera", "sonar": "sonar", "sonar_uncoupled": "sonar"}
@@ -124,22 +125,13 @@ def main():
 
     from mmdet.registry import MODELS as DET_MODELS
     model = DET_MODELS.build(cfg.model)
-    # torch>=2.6 defaults torch.load to weights_only=True, and mmengine
-    # 0.10.7 passes no override; its checkpoints embed HistoryBuffer and
-    # numpy objects in meta, so the weights-only unpickler rejects them.
-    # These checkpoints are this repo's own local artifacts -> load them
-    # with weights_only=False (PyTorch's option (1) for trusted files).
-    _orig_load = torch.load
-
-    def _load_trusted(*a, **k):
-        k.setdefault("weights_only", False)
-        return _orig_load(*a, **k)
-
-    torch.load = _load_trusted
-    try:
+    # torch>=2.6 defaults torch.load to weights_only=True and mmengine
+    # 0.10.7 passes no override; mmengine checkpoints embed HistoryBuffer
+    # and numpy objects in meta, which the weights-only unpickler rejects.
+    # These checkpoints are this repo's own local artifacts -> scoped
+    # weights_only=False (aodet.torch_load_compat, shared with train.py).
+    with trusted_torch_load():
         load_checkpoint(model, args.checkpoint, map_location="cpu")
-    finally:
-        torch.load = _orig_load
     model = model.to(args.device).eval()
 
     dl_cfg = cfg.test_dataloader

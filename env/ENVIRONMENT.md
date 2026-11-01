@@ -76,19 +76,23 @@ suite on this env: see `doc/logs/2026-10-30-f2-codebase-w1-w3.md`.
 
 Second torch-version flip handled: torch >= 2.6 defaults
 `torch.load(weights_only=True)`; mmengine 0.10.7 passes no override and
-its checkpoints embed `HistoryBuffer`/numpy objects in `meta`, so
-`tools/test.py` loads local checkpoints through a scoped
-`weights_only=False` wrapper (trusted own artifacts).  The predicted
-resume case fired on 2026-11-02: resuming e10_m3_tau4 from epoch_10
-died twice on `numpy.core.multiarray._reconstruct`.  Measured: the
-class-level `add_safe_globals([HistoryBuffer])` committed in fa2777c
-does NOT suffice (numpy globals inside its pickled state are still
-denied).  Working mitigation: launch the resume with
-`TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` plus `--cfg-options resume=True`
-(mmengine only auto-resumes when `cfg.resume` is truthy).  Durable fix
-owed before E11's 3-seed × 3-arm long runs: port test.py's scoped
-wrapper into the train/resume path and add a save-then-resume smoke
-test.  Full incident: `doc/logs/2026-11-02-tau4-resume-weights-only.md`.
+its checkpoints embed `HistoryBuffer`/numpy objects in `meta`.  The
+predicted resume case fired on 2026-11-02: resuming e10_m3_tau4 from
+epoch_10 died twice on `numpy.core.multiarray._reconstruct`, and the
+class-level `add_safe_globals([HistoryBuffer])` from fa2777c proved
+insufficient (numpy globals inside its pickled state stay denied;
+measured).  Durable fix (2026-11-02, same day): `aodet/torch_load_compat
+.py::trusted_torch_load()` — a scoped monkeypatch defaulting
+`weights_only=False` for these trusted local artifacts, shared by
+`tools/train.py` (wraps `runner.train()`, so resume and load-from are
+covered) and `tools/test.py`; an explicit `weights_only` argument always
+wins, and `TORCH_FORCE_WEIGHTS_ONLY_LOAD=1` disables the wrapper for
+operators who want the sandbox enforced.  `tests/test_torch_load_compat
+.py` keeps a save-then-resume smoke through the exact `CheckpointLoader`
+path (6/6 green on torch 2.7.1, version-gated negative control below
+2.6).  Resuming still needs `--cfg-options resume=True` — mmengine only
+auto-resumes when `cfg.resume` is truthy.  Full incident:
+`doc/logs/2026-11-02-tau4-resume-weights-only.md`.
 
 The pinned CPU/debug `.venv` is untouched and remains the reproducibility
 baseline; the cu121 `env/environment.yml` stays for any true 24 GB

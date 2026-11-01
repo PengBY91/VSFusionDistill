@@ -514,7 +514,7 @@ M3 蒸馏配置（首次启用 M 系列）：`teacher_input='clear'`（教师恒
 4. 录音清点工具：逐录音输出类别、几何（弧线/直线/瞄准模式）、标注帧数、blob 帧数、标定残差、目标运动标记（相机 GT 中心或声呐 GT 测距轴在录音内单调漂移超过画面 10%）。
 5. `tools/test.py`、`tools/anatomy.py`、`tools/camera_anatomy.py` 支持按 split 与逐录音、逐类输出；增加已知答案测试（完美预测 → 1.0；类别全错 → 类感知 0、类无关不变）。
 
-**前置项状态（2026-11-02）**：2–4 已交（21f1345，标定缓存指纹等价、三分 split 往返、清点与划分工具），5 已交（6e2043a，逐 split/逐录音/逐类输出 + 已知答案测试，全仓 207 项测试绿）；1 在途：data_processed.7z（57 GiB）已于 11-02 05:32 md5 校验通过（`data/raw/uxo-full/download.log`），data_export_polar.7z、data_export_recordings.7z 在途。另记：resume 路径在 torch 2.7 下需环境变量支撑（`doc/logs/2026-11-02-tau4-resume-weights-only.md` 待办一），属数据闸门前须收口的工程项。
+**前置项状态（2026-11-02）**：2–4 已交（21f1345，标定缓存指纹等价、三分 split 往返、清点与划分工具），5 已交（6e2043a，逐 split/逐录音/逐类输出 + 已知答案测试）；1 在途：data_processed.7z（57 GiB）已于 11-02 05:32 md5 校验通过（`data/raw/uxo-full/download.log`），data_export_polar.7z、data_export_recordings.7z 在途。resume 兼容工程项已收口：train/test 共用 `aodet/torch_load_compat` 的 scoped weights_only 包装 + save-then-resume 冒烟测试（事故记录 `doc/logs/2026-11-02-tau4-resume-weights-only.md` 待办一）。
 
 **划分规则（出数前冻结，划分脚本与录音清单 sha256 在训练前写入本节）**：
 
