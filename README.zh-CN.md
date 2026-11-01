@@ -4,7 +4,7 @@
 
 水下机器人出海时，前视声呐和相机同时在线。声呐不受浊度影响；相机画质随浊度和光照连续退化，从清水（D0）到重度退化（D4），直到完全不可用（D∞）。本代码库在整条可靠性轴上训练和评测双流声光检测器，回答两个问题：训练期特权蒸馏（教师看清晰相机、学生看退化相机）是否比推理期特征融合更能保住声呐支路；这种"互增强"的代价是什么——两条支路的误差被拉相关了多少，而下游恰恰把两路检出当独立证据用。
 
-完整研究方案：`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`；实验台账（每个实验：设置/结果/解读/结论）：`doc/experiments.md`；搭建过程日志：`doc/logs/`。
+完整研究方案：`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`；当前思路与路线（2026-11-01 复盘，优先读）：`doc/f2-rethink-2026-11-01.md`；实验台账（每个实验：设置/结果/解读/结论）：`doc/experiments.md`；搭建过程日志：`doc/logs/`。
 
 基础栈：MMDetection 3.3.0（YOLOX 系）+ mmengine 0.10.7 + torch 2.1.2，版本固定于 `env/`（本机另建 torch 2.7.1+cu128 的 `.venv-gpu` 跑 RTX 5090，见 `env/ENVIRONMENT.md`）。第三方仓库一律不改：`third_party/` 以固定 SHA 只读克隆（`tools/clone_third_party.sh`、`third_party/PINNED.md`）。
 
@@ -65,14 +65,14 @@ clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no
 
 | 家族 | 选题文档编号 | 做法 | 状态（2026-11-01） |
 |---|---|---|---|
-| 纯声呐基线 | B0 | 声呐单流单头 YOLOX-S | 配置 `configs/f2/s0_b0_sonar_only_yoloxs.py`，E09a/b 审后重跑已判（2026-11-01） |
-| 推理期融合 | ≈B2/B3 | 双流三头 + 交叉注意力，训练期按 p(s) 退化采样 | 配置 `configs/f2/s0_cross_attn_yoloxs.py`，E09c 已出数（2026-11-01）：融合头与解耦头同数、D∞ 回退正确 |
-| 特权蒸馏 | B1、M1–M5 | 冻结清晰教师 + branch_kd +（M4）跨平面 MIL | 模块与测试就绪（`teachers/`、`losses/`），训练配置待 S0 闸门后展开 |
+| 纯声呐基线 | B0 | 声呐单流单头 YOLOX-S | `configs/f2/e09_s0_b0_jitter_yoloxs.py`（E09b）；sample 平台上 test 声呐在地板（类感知 ≤ 0.04） |
+| 推理期融合 | ≈B2/B3 | 双流三头 + 交叉注意力，训练期按 p(s) 退化采样 | `configs/f2/e10_b3_degaug_yoloxs.py`（B3）、`s0_b2_cross_attn_nominal_yoloxs.py`（B2）；E09c/E10 声呐双头在地板，RQ-0 不可测 |
+| 特权蒸馏 | B1、M1–M5 | 冻结清晰教师 + branch_kd +（M4）跨平面 MIL | E10 M3（τ=2）只有相机支路的方向性正读数，结论已降级；跨模态类别路由（教师相机 → 学生声呐，经 π）待实现，E12 检验 |
 | 晚融合参照 | B5 | 两个单模态检测器结果级匹配融合 | 规划中（结构上无耦合，作支路相关性参照） |
 
 完整方法空间（B0–B6、M1–M5）定义见选题文档 §2.2；逐实验进度见 `doc/experiments.md`。
 
-当前阶段（2026-10-30 起）尚未启动 M 系列训练，全部工作在修 B0 基线与评测管线。原因：融合与蒸馏的 claim（相机特权信息让声呐支路在相机不可用时更强）要可测，前提是单流基线和测量仪器本身可信。这段地基工作与主线的对应关系：
+主线状态（2026-11-01 复盘，详见 `doc/f2-rethink-2026-11-01.md`）：E01–E10 修好了一串会让融合/蒸馏结论失真的地基问题（下表），但 sample 平台本身测不了 F2 的核心问题。5 条录音每条恰好一类、每类训练只有一条录音，类别与录音完全绑定；声呐读数一直在地板上；种子噪声（约 ±0.02）与 E10 的判定阈值同量级。E10 的相机正读数来自单条录音（100927）上的类别排序变化，特权、容量、类先验三种来源没拆开，而且 E10 的声呐路由（sonar←sonar）在融合几乎不用相机时原理上传不了特权。调整：研究问题不变，测量平台迁到全量 UXO 的类别均衡录音级划分（E11），先测天花板、平台档位和 σ，再用跨模态类别蒸馏加类先验对照检验 H-cls（E12），主判据回到声呐支路。
 
 | 地基发现 | 不修会对融合/蒸馏造成什么 |
 |---|---|
@@ -81,9 +81,8 @@ clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no
 | KD 损失键不含 "loss" 前缀则 mmengine 不反传（代码审查 §1.1） | M 系列蒸馏损失只记录不训练，实验静默失败；已修，蒸馏从新代码起步 |
 | 尺度抖动被固定尺寸 resize 精确抵消（E08 勘误） | 尺度增强类鲁棒性结论必为假阴性；E09b 用修复后抖动确认尺度轴已修 |
 | 旧训练配方：无预训练、lr 8×、无 EMA（E07 勘误 3） | B2 vs B0、M1 vs B2 的增益无法归因；E09 起换新配方基线 |
-| 录音级域塌缩：声光两模态在未见录音上一起塌（E07 终判，相机支路同样 train 1.000 / test 0.15–0.19；E09a 维持） | M 系列 claim 在 5 录音 split 上会被地板效应淹没；路线决策（LOO-CV / 全量 UXO / 口径重定标）实质是"融合与蒸馏的 claim 在什么评测设计下可测" |
+| 录音级域塌缩 + 类别与录音绑定：声光两模态在未见录音上一起塌（E07），sample 每类只有一条训练录音（E08） | 任何方法的声呐读数都落在地板，s 轴效应测不出；对策是全量 UXO 类别均衡划分（E11） |
 
-地基阶段有一处读数直接指向主线：定位已通（E09b 在 100927 的类无关 AP50 0.087）而类别头塌缩（两臂类感知 0.000–0.013，跨录音预测几乎全滑向 cat1）。类别恰是光学模态最可能提供特权信息的维度（光学外观比声呐回波斑可分得多），"蒸馏重点托住声呐类别头"由此成为 M 系列一个有直接证据入口的设计假设。E09c（cross-attn 新配方臂）已出数：融合头与未耦合头读数几乎相同（100927 d0 类无关 0.072 vs 0.077）且对相机退化逐档零敏感，RQ-0 的互毒害分支未触发、互增益也未出现——S 规格下推理期融合不构成声呐侧增益来源，特权信息进入声呐头的通道收敛到训练期蒸馏（E10 已判定：相机支路正向、声呐侧不动）。
 
 ## 3. 整体架构与数据流
 
@@ -148,7 +147,7 @@ flowchart TB
 | `aodet/geometry/` | M₀ 相机→方位映射 + 翻转镜像（`m0.py`）、ARIS 波束表 |
 | `configs/` | `_base_`（模型/数据/调度/运行时）+ `f2/` S0-lite 配置（B0、cross-attn） |
 | `tools/` | `train.py`、`test.py`（逐支路 D0–D∞ 扫描）、`project_uxo_sonar.py`（标定+投影）、`check_gt_validity.py`、`make_degraded_testsets.py`、`run_seeds.sh`、`collect_results.py`、`correlation_table.py`、第三方 pin、RSFusionDet 监视 |
-| `tests/` | 87 项测试：退化物理、格式往返、几何、指标、模型、UXO 转换器与投影、端到端管线与工具 |
+| `tests/` | 161 项测试（2026-11-01 收集数）：退化物理、格式往返、几何、指标、模型、UXO 转换器与投影、端到端管线与工具 |
 | `env/` | 安装脚本 + `ENVIRONMENT.md` 版本记录 |
 | `doc/` | 选题方案、实验台账 `experiments.md`、过程日志 `doc/logs/`、证据存档 `doc/evidence/` |
 | `data/paired/` | 转换后的配对数据（UXO：2573 对 + 投影报告与拼图） |
@@ -157,7 +156,7 @@ flowchart TB
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # 87 passed
+python -m pytest tests/ -q          # 161 tests collected (2026-11-01)
 
 # S0-lite（UXO sample 已转换至 data/paired/uxo/）
 python tools/train.py configs/f2/s0_b0_sonar_only_yoloxs.py --seed 0
@@ -187,10 +186,9 @@ python tools/collect_results.py work_dirs --out results/results.csv
 
 ## 9. 状态（2026-11-01）
 
-- W1 环境安装并验证；COCO YOLOX-S 复现门在 val2017 全量（5000 图）通过（AP 40.30 vs 官方 40.5）。W2 配对格式/退化/变换/指标完成并有测试；W3 模型+配置+工具完成，S0-lite 在合成数据上端到端冒烟通过。
-- UXO sample 核验（×3 标注规则、GoPro 对齐、外参）并转换：`data/paired/uxo/` 下 2573 对（E07 划分：test = 100927 弧 + 124735 线，train 1680 / test 893 帧，每段 test 录音恰有一个新颖维）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：逐 recording 稳健标定 + `b_rng` 锚定 + 投影，`sonar.json` 已标注（blob 1195 / projected 1378；2026-11-01 镜像盆修复重标定后为 blob 1319 / projected 1254，test 框集不变），`pairs.csv` 已写；误差统计与拼图见 `data/paired/uxo/projection_report.json` / `projection_check.jpg` 及 W1–W3 日志。
-- 本机 GPU 环境就绪，可跑 S0-lite（RTX 5090 D v2 24 GB）：`.venv-gpu` = torch 2.7.1+cu128 + 源码 CPU-ops mmcv 2.1.0 + NMS CPU 回退（`aodet/cuda_compat.py`），见 `env/ENVIRONMENT.md`。固定 cu121 栈无法跑 Blackwell；CPU 调试 `.venv` 未动。
-- S0-lite 首跑暴露 GT 语义缺陷：几何投影框在水池距离横跨半幅图而真实回波紧凑，训练虽收敛 AP 仍 ≈0（E04）；投影框已钳制到回波尺度。钳制后的重训（E05）test AP 仍 ≈0 而 train AP50=0.80，终判：E02 划分混淆了几何（3 弧全 train / 2 线全 test）+ projected 框落在无回波帧（E06 gate）。E06 锚定标定（blob 帧 dy p50 1.5–6 px）并把训练 GT 改为 blob-only；E07 在单维新颖划分上重训 B0 + cross-attn。
-- 同事代码审查（2026-10-31 合入，`doc/reviews/2026-10-31-f2-code-review.md`）后进入审后重跑：E08 两臂作废（尺度抖动系空操作 + 旧配方混淆，勘误入账），全部在册结论过账（`doc/experiments.md` 3.x.1）；镜像盆修复后五录音重标定为新 GT 基线（blob 1319 / projected 1254，test 参照不变）。E09 三臂（配方对照 / 真抖动 / 新架构 cross-attn）并行重跑：a/b 已判——域塌缩维持（主判据中间带 0.013）、尺度轴已修（类无关 +0.061）、类轴升为第一瓶颈（cat3 对配方与增广都敏感）、124735 回退触发不伤害标准；c 臂：融合头与解耦头同数（100927 d0 类无关 0.072 vs 0.077）、对相机退化逐档零敏感、D∞ 相机零预测回退正确，推理期融合无毒害亦无增益。地基工作与融合/蒸馏主线的对应表见 §2.3。
-- E10（2026-11-01）是首个方法层实验：特权蒸馏 M3 对退化增强融合强基线 B3，教师为 YOLOX-L 双流 T-L。门 0 绝对裕度未过（T-L 相机 0.1270 < 0.1500），用户裁定文档化偏离（T-L ≥ 2×B3 相对裕度、train 自评 1.000，两条满足）；判前对 B3 相机 d0 0.0500 逐录音审计：100927 定位已解（类无关 0.9247）、损失全在类别轴（全 cat3 录音上 cat2 预测 1347 条 vs cat3 145 条），124735 为结构性 0——全库唯一运动目标录制（相机 GT 中心 576→976 下沉、声呐 GT 测距轴 152→314 同步；165/168 高瘦框、93/168 贴底），各代模型逐帧以 0.9+ 置信同列同类跟随但 IoU ≤ 0.28，量的是标注口径域差而非检测能力。M3（τ=2，温度首次实现）当晚 20:36 出数判定：判据 1 成立——相机 AP50 于 d0–d4 全档压过 B3，mean Δ(d2:d4) = +0.0434 ≥ +0.02（增益随退化扩大，d4 +0.0539）；判据 2 满足（mean 保留率 d1:d4 为 1.123 vs 0.727）；判据 3/4 无伤害通过（声呐双头逐档持平 ≈0.0098/0.0093 blob AP50，D∞ 相机静默）。解剖分解把 pooled 增益全部定位到 100927 类别轴（cat3 感知 0.1004 → 0.1355、cat3 预测 +55%；类无关持平 ≈0.92、top-1 IoU 双 0.62）：当前蒸馏是挪动类别混淆而非修定位，pooled 与分解读数须并列报告。同日文献核对（`doc/logs/2026-11-01-e10-literature-check.md`）确认该数据集无跨录制协议先例（CMOLD 同分布切分 + 自制声呐标签，声呐基线 AP50 0.943；CMHD 类均衡轨迹级切分 0.66–0.80 mAP@[.50:.95]；相机支路无任何发表测试数），绝对水平仍被两条数据集域问题封顶、与文献数字不可比。判据 6（τ ∈ {1,4}）自动触发、连夜运行。预登记判据 1–6 见 `doc/experiments.md` E10，审计链见 `doc/logs/2026-11-01-e10-camera-audit.md`。
-- RSFusionDet 仓库仍为空（路线 a 监视中）。
+- 环境与管线：COCO YOLOX-S 复现门通过（AP 40.30 vs 官方 40.5）；本机 RTX 5090 用 `.venv-gpu`（torch 2.7.1+cu128，见 `env/ENVIRONMENT.md`）。
+- 数据：UXO sample 已转换为 `data/paired/uxo/`（2573 对；镜像盆修复后重标定为 blob 1319 / projected 1254）。训练 GT 用 blob-only，投影框只作 π 与 `gt=all` 口径。
+- 实验：E01–E10 记录在 `doc/experiments.md`。E10 已按复盘降级为方向性读数；τ ∈ {1, 4} 两臂出数后只记录不解读。
+- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，等待全量数据下载和代码前置项（标定指纹缓存、三分 split、录音清点、按 split 评测与已知答案测试）。
+- 待决：是否下载全量 UXO 并投入 E11 预算；E11 落在天花板或地板档时论文定位如何调整（见复盘 §3.5、§7）。
+- RSFusionDet 仓库仍为空（每两周核验，`doc/logs/rsfusiondet-watch.log`）。
