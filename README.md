@@ -65,14 +65,27 @@ Training distribution: each sample's camera input draws s ~ p(s) from {D0,…,D4
 
 ### 2.3 Method space and where this repo stands
 
-| family | topic-doc id | recipe | status (2026-10-31) |
+| family | topic-doc id | recipe | status (2026-11-01) |
 |---|---|---|---|
-| sonar-only baseline | B0 | single-stream single-head YOLOX-S | config `configs/f2/s0_b0_sonar_only_yoloxs.py`; retraining (E07) |
-| inference-time fusion | ≈B2/B3 | two streams, three heads + cross-attention, p(s) degradation sampling in training | config `configs/f2/s0_cross_attn_yoloxs.py`; retraining (E07) |
+| sonar-only baseline | B0 | single-stream single-head YOLOX-S | config `configs/f2/s0_b0_sonar_only_yoloxs.py`; post-review rerun adjudicated (E09a/b, 2026-11-01) |
+| inference-time fusion | ≈B2/B3 | two streams, three heads + cross-attention, p(s) degradation sampling in training | config `configs/f2/s0_cross_attn_yoloxs.py`; rerunning with sound recipe + new arch (E09c) |
 | privileged distillation | B1, M1–M5 | frozen clear-view teacher + branch_kd + (M4) cross-plane MIL | modules + tests ready (`teachers/`, `losses/`); training configs gated on S0 |
 | late fusion reference | B5 | two single-modality detectors matched at result level | planned (structurally uncoupled; correlation reference) |
 
 The full method space (B0–B6, M1–M5) is defined in topic doc §2.2; per-experiment progress lives in `doc/experiments.md`.
+
+The current phase (since 2026-10-30) has not started M-series training; all work has gone into repairing the B0 baseline and the evaluation pipeline. The reason: the fusion/distillation claim (camera-privileged information keeps the sonar branch strong when the camera is unavailable) is only measurable if the single-stream baseline and the measuring instrument are trustworthy. How this foundation work maps onto the mainline:
+
+| foundation finding | consequence for fusion/distillation if left unfixed |
+|---|---|
+| GT double-scale poisoning: geometric projection boxes span half the image while echoes are compact (E04) | the sonar head never learns boxes; every KD loss is computed on wrong supervision |
+| evaluation aliasing bug: the two sonar heads share samples and the later fused pass overwrites the earlier uncoupled one (E07 erratum 2) | the fusion-vs-no-fusion comparison compared one output against itself; "fusion has no effect" was a measurement artifact; fixed + anti-alias regression test |
+| KD loss keys without a "loss" prefix are logged but never backpropagated by mmengine (code review §1.1) | M-series distillation losses would train nothing while looking healthy; fixed, distillation starts from the new code |
+| scale jitter exactly undone by the fixed-size resize (E08 erratum) | scale-augmentation robustness conclusions are guaranteed false negatives; E09b confirms the scale axis fixed with the repaired jitter |
+| old training recipe: no pretrain, 8× lr, no EMA (E07 erratum 3) | B2-vs-B0 and M1-vs-B2 gains are unattributable; E09 switches to the sound recipe |
+| recording-level domain collapse: both modalities collapse together on unseen recordings (E07 verdict; camera branch also train 1.000 / test 0.15–0.19; upheld by E09a) | M-series claims would be drowned by the floor effect on a 5-recording split; the route decision (LOO-CV / full UXO / caliber re-definition) is in substance "under which evaluation design the fusion and distillation claims are measurable at all" |
+
+One reading points straight at the mainline: localisation already transfers (E09b class-agnostic AP50 0.087 on 100927) while the class head collapses (class-aware 0.000–0.013 across arms; cross-recording predictions slide almost entirely to cat1). Class is exactly the dimension where optics is the most plausible source of privileged information (optical appearance is far more separable than sonar echo blobs), so "distillation that specifically shores up the sonar class head" becomes an M-series design hypothesis with a direct evidence handle. E09c (the cross-attn sound-recipe arm) is the first fusion arm whose measurement is trustworthy; the RQ-0 gate scan gets its clean control once it reports.
 
 ## 3. Architecture and data flow
 
@@ -176,10 +189,11 @@ Per-experiment setup, result tables, interpretation and conclusions are kept in 
 
 Per-branch AP by degradation level from saved prediction files (`tools/test.py` → `pred.<branch>.<level>.json` + `ap_summary.json`). Sonar branches are reported against both the full GT and the blob-only subset (`gt=all` / `gt=blob`): projected boxes carry the calibration's range-axis error, so the blob subset is the clean reference. Branch error correlation (φ, conditional miss lift ΔP_miss with bootstrap CI, Spearman confidence correlation, naive-Bayes fused existence ECE) in `aodet/evaluation/branch_correlation.py`, run over a work dir via `tools/correlation_table.py` → `correlation.csv`.
 
-## 9. Status (2026-10-31)
+## 9. Status (2026-11-01)
 
 - W1 environment installed + verified; COCO YOLOX-S reproduction gate passed on the full val2017 (5000 images, AP 40.30 vs official 40.5). W2 paired format / degradation / transforms / metrics done and tested; W3 model + configs + tools done, S0-lite smoke passes end-to-end on synthetic data.
-- UXO sample verified (×3 label rule, GoPro alignment, extrinsics) and converted: 2573 pairs under `data/paired/uxo/` (E07 split: test = 100927 arc + 124735 line, train 1680 / test 893 frames; each test recording novel in exactly one dimension). Sonar-side boxes + cross-modal correspondence π done (TODO 14.2 item 4): per-recording robust calibration + `b_rng` anchoring + projection, `sonar.json` annotated (blob 1195 / projected 1378), `pairs.csv` written; error stats + contact sheet in `data/paired/uxo/projection_report.json` / `projection_check.jpg` and the W1–W3 log.
+- UXO sample verified (×3 label rule, GoPro alignment, extrinsics) and converted: 2573 pairs under `data/paired/uxo/` (E07 split: test = 100927 arc + 124735 line, train 1680 / test 893 frames; each test recording novel in exactly one dimension). Sonar-side boxes + cross-modal correspondence π done (TODO 14.2 item 4): per-recording robust calibration + `b_rng` anchoring + projection, `sonar.json` annotated (blob 1195 / projected 1378; after the 2026-11-01 post-mirror-fix recalibration blob 1319 / projected 1254, test box set unchanged), `pairs.csv` written; error stats + contact sheet in `data/paired/uxo/projection_report.json` / `projection_check.jpg` and the W1–W3 log.
 - GPU env ready for S0-lite on this box (RTX 5090 D v2 24 GB): `.venv-gpu` with torch 2.7.1+cu128 + source-built CPU-ops mmcv 2.1.0 and an NMS CPU fallback (`aodet/cuda_compat.py`); see `env/ENVIRONMENT.md`. Pinned cu121 stack cannot run on Blackwell; the CPU/debug `.venv` is untouched.
 - S0-lite first run exposed a GT-semantics flaw: geometric projection boxes span half the image at tank ranges while real echoes are compact, so AP stayed ~0 despite converged training (E04); projected boxes are now clamped to echo scale. The clamped retrain (E05) still scored test AP ≈ 0 with train AP50 = 0.80; root cause: the E02 recording-level split confounded geometry (3 arcs in train / 2 lines in test) and projected boxes mark no-echo frames (E06 validity gate). E06 anchored the calibration (blob-frame dy p50 1.5–6 px) and moved training GT to blob-only; E07 retrains B0 + cross-attn on the single-novelty split.
+- After a colleague's code review (merged 2026-10-31, `doc/reviews/2026-10-31-f2-code-review.md`) the repo entered a post-review rerun phase: E08 voided on both arms (the scale jitter was a no-op + old-recipe confound, erratum recorded), every registered conclusion re-audited (`doc/experiments.md` 3.x.1), and all five recordings recalibrated after the mirror-basin fix into a new GT baseline (blob 1319 / projected 1254, test references unchanged). E09 reruns three arms in parallel (recipe control / true jitter / new-arch cross-attn): a/b adjudicated — domain collapse upheld (main criterion in the partial band, 0.013), scale axis fixed (class-agnostic +0.061), class axis promoted to the primary bottleneck (cat3 sensitive to both recipe and augmentation), 124735 regression tripping the no-harm criterion; arm c still training. The mapping from foundation work to the fusion/distillation mainline is tabulated in §2.3.
 - RSFusionDet repo still empty (route a watch ongoing).

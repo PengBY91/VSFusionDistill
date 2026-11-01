@@ -17,7 +17,7 @@
 | 研究问题 | 一句话 | 在代码里的载体 |
 |---|---|---|
 | RQ-0（闸门） | 相机退化时，推理期交叉注意力融合会不会拖累声呐支路（互毒害）？ | `s0_cross_attn` vs `s0_b0` 的逐支路 D0–D∞ 扫描（`tools/test.py`） |
-| RQ-1 | 对声呐支路，训练期蒸馏与推理期融合谁更有效？ | 方法空间 B1 vs B2/B3 vs M3（§2.4） |
+| RQ-1 | 对声呐支路，训练期蒸馏与推理期融合谁更有效？ | 方法空间 B1 vs B2/B3 vs M3（§2.3） |
 | RQ-2 | 蒸馏收益里"容量收益"（大教小学生）与"特权收益"（教师看清晰、学生看退化）各占多少？ | 2×2 归因：同容量/大教师 × 退化/清晰输入 |
 | RQ-3 | 跨平面方位窗蒸馏是否优于逐网格蒸馏？ | `aodet/models/losses/cross_plane_mil.py` |
 | RQ-4 | 互增强让两支路误差相关了多少？代价多大？ | `aodet/evaluation/branch_correlation.py` |
@@ -63,14 +63,27 @@ clear camera frame ──► FrozenTeacher（更大或同容量双流 YOLOX，no
 
 ### 2.3 方法空间与当前进度
 
-| 家族 | 选题文档编号 | 做法 | 状态（2026-10-31） |
+| 家族 | 选题文档编号 | 做法 | 状态（2026-11-01） |
 |---|---|---|---|
-| 纯声呐基线 | B0 | 声呐单流单头 YOLOX-S | 配置 `configs/f2/s0_b0_sonar_only_yoloxs.py`，E07 重训中 |
-| 推理期融合 | ≈B2/B3 | 双流三头 + 交叉注意力，训练期按 p(s) 退化采样 | 配置 `configs/f2/s0_cross_attn_yoloxs.py`，E07 重训中 |
+| 纯声呐基线 | B0 | 声呐单流单头 YOLOX-S | 配置 `configs/f2/s0_b0_sonar_only_yoloxs.py`，E09a/b 审后重跑已判（2026-11-01） |
+| 推理期融合 | ≈B2/B3 | 双流三头 + 交叉注意力，训练期按 p(s) 退化采样 | 配置 `configs/f2/s0_cross_attn_yoloxs.py`，E09c 重训中（新配方 + 新架构） |
 | 特权蒸馏 | B1、M1–M5 | 冻结清晰教师 + branch_kd +（M4）跨平面 MIL | 模块与测试就绪（`teachers/`、`losses/`），训练配置待 S0 闸门后展开 |
 | 晚融合参照 | B5 | 两个单模态检测器结果级匹配融合 | 规划中（结构上无耦合，作支路相关性参照） |
 
 完整方法空间（B0–B6、M1–M5）定义见选题文档 §2.2；逐实验进度见 `doc/experiments.md`。
+
+当前阶段（2026-10-30 起）尚未启动 M 系列训练，全部工作在修 B0 基线与评测管线。原因：融合与蒸馏的 claim（相机特权信息让声呐支路在相机不可用时更强）要可测，前提是单流基线和测量仪器本身可信。这段地基工作与主线的对应关系：
+
+| 地基发现 | 不修会对融合/蒸馏造成什么 |
+|---|---|
+| GT 双尺度中毒：几何投影框横跨半幅而回波紧凑（E04） | 声呐头学不出框，任何 KD 损失都算在错误监督上 |
+| 评测别名 bug：两个声呐头共享样本，后算的 fused 覆盖先算的 uncoupled（E07 勘误 2） | 融合 vs 非融合对比的两份预测文件实为同一输出，"融合零影响"是测量假象；已修并加反别名回归测试 |
+| KD 损失键不含 "loss" 前缀则 mmengine 不反传（代码审查 §1.1） | M 系列蒸馏损失只记录不训练，实验静默失败；已修，蒸馏从新代码起步 |
+| 尺度抖动被固定尺寸 resize 精确抵消（E08 勘误） | 尺度增强类鲁棒性结论必为假阴性；E09b 用修复后抖动确认尺度轴已修 |
+| 旧训练配方：无预训练、lr 8×、无 EMA（E07 勘误 3） | B2 vs B0、M1 vs B2 的增益无法归因；E09 起换新配方基线 |
+| 录音级域塌缩：声光两模态在未见录音上一起塌（E07 终判，相机支路同样 train 1.000 / test 0.15–0.19；E09a 维持） | M 系列 claim 在 5 录音 split 上会被地板效应淹没；路线决策（LOO-CV / 全量 UXO / 口径重定标）实质是"融合与蒸馏的 claim 在什么评测设计下可测" |
+
+地基阶段有一处读数直接指向主线：定位已通（E09b 在 100927 的类无关 AP50 0.087）而类别头塌缩（两臂类感知 0.000–0.013，跨录音预测几乎全滑向 cat1）。类别恰是光学模态最可能提供特权信息的维度（光学外观比声呐回波斑可分得多），"蒸馏重点托住声呐类别头"由此成为 M 系列一个有直接证据入口的设计假设。E09c（cross-attn 新配方臂）是第一个测量可信的融合臂，出数后 RQ-0 的闸门扫描才有干净对照。
 
 ## 3. 整体架构与数据流
 
@@ -172,10 +185,11 @@ python tools/collect_results.py work_dirs --out results/results.csv
 
 基于保存的预测文件按退化级别出逐支路 AP（`tools/test.py` → `pred.<branch>.<level>.json` + `ap_summary.json`）。声呐支路同时报全量 GT 与 blob 子集两个口径（`gt=all` / `gt=blob`）：投影框带标定距离维误差，blob 子集是干净参照。支路误差相关性（φ、带 bootstrap 置信区间的条件漏检升幅 ΔP_miss、Spearman 置信相关、朴素贝叶斯融合存在性 ECE）实现在 `aodet/evaluation/branch_correlation.py`，经 `tools/correlation_table.py` 对 run 目录输出 `correlation.csv`。
 
-## 9. 状态（2026-10-31）
+## 9. 状态（2026-11-01）
 
 - W1 环境安装并验证；COCO YOLOX-S 复现门在 val2017 全量（5000 图）通过（AP 40.30 vs 官方 40.5）。W2 配对格式/退化/变换/指标完成并有测试；W3 模型+配置+工具完成，S0-lite 在合成数据上端到端冒烟通过。
-- UXO sample 核验（×3 标注规则、GoPro 对齐、外参）并转换：`data/paired/uxo/` 下 2573 对（E07 划分：test = 100927 弧 + 124735 线，train 1680 / test 893 帧，每段 test 录音恰有一个新颖维）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：逐 recording 稳健标定 + `b_rng` 锚定 + 投影，`sonar.json` 已标注（blob 1195 / projected 1378），`pairs.csv` 已写；误差统计与拼图见 `data/paired/uxo/projection_report.json` / `projection_check.jpg` 及 W1–W3 日志。
+- UXO sample 核验（×3 标注规则、GoPro 对齐、外参）并转换：`data/paired/uxo/` 下 2573 对（E07 划分：test = 100927 弧 + 124735 线，train 1680 / test 893 帧，每段 test 录音恰有一个新颖维）。声呐侧框 + 跨模态对应 π 完成（TODO 14.2 条目 4）：逐 recording 稳健标定 + `b_rng` 锚定 + 投影，`sonar.json` 已标注（blob 1195 / projected 1378；2026-11-01 镜像盆修复重标定后为 blob 1319 / projected 1254，test 框集不变），`pairs.csv` 已写；误差统计与拼图见 `data/paired/uxo/projection_report.json` / `projection_check.jpg` 及 W1–W3 日志。
 - 本机 GPU 环境就绪，可跑 S0-lite（RTX 5090 D v2 24 GB）：`.venv-gpu` = torch 2.7.1+cu128 + 源码 CPU-ops mmcv 2.1.0 + NMS CPU 回退（`aodet/cuda_compat.py`），见 `env/ENVIRONMENT.md`。固定 cu121 栈无法跑 Blackwell；CPU 调试 `.venv` 未动。
 - S0-lite 首跑暴露 GT 语义缺陷：几何投影框在水池距离横跨半幅图而真实回波紧凑，训练虽收敛 AP 仍 ≈0（E04）；投影框已钳制到回波尺度。钳制后的重训（E05）test AP 仍 ≈0 而 train AP50=0.80，终判：E02 划分混淆了几何（3 弧全 train / 2 线全 test）+ projected 框落在无回波帧（E06 gate）。E06 锚定标定（blob 帧 dy p50 1.5–6 px）并把训练 GT 改为 blob-only；E07 在单维新颖划分上重训 B0 + cross-attn。
+- 同事代码审查（2026-10-31 合入，`doc/reviews/2026-10-31-f2-code-review.md`）后进入审后重跑：E08 两臂作废（尺度抖动系空操作 + 旧配方混淆，勘误入账），全部在册结论过账（`doc/experiments.md` 3.x.1）；镜像盆修复后五录音重标定为新 GT 基线（blob 1319 / projected 1254，test 参照不变）。E09 三臂（配方对照 / 真抖动 / 新架构 cross-attn）并行重跑：a/b 已判——域塌缩维持（主判据中间带 0.013）、尺度轴已修（类无关 +0.061）、类轴升为第一瓶颈（cat3 对配方与增广都敏感）、124735 回退触发不伤害标准；c 臂训练中。地基工作与融合/蒸馏主线的对应表见 §2.3。
 - RSFusionDet 仓库仍为空（路线 a 监视中）。
