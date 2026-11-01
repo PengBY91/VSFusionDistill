@@ -7,6 +7,12 @@ target into every sonar frame, then writes sonar.json annotations and
 pairs.csv.  Also emits a calibration/projection-error report and an
 optional contact sheet for eyeball checks.
 
+The calibration cache (projection_calib.json, v2) is keyed by an input
+fingerprint per recording -- source annotations + poses + blob
+detections + fit parameters -- so a cache hit reproduces the
+calibration those exact inputs produce; changed inputs or parameters
+recompute (E11 prereq 2, replaces the name-keyed v1 cache).
+
     python tools/project_uxo_sonar.py --paired data/paired/uxo \
         --write --contact-sheet 12
 """
@@ -85,6 +91,45 @@ def _calib_from_dict(d: dict):
         rms_rng_m=d["rms_rng_m"])
 
 
+def load_calib_cache(cache_path: str, fingerprints: dict):
+    """(usable, stale) for a fingerprint-keyed cache.
+
+    usable: {recording: calib-dict} whose stored fingerprint matches the
+    expected one -- a hit means the cached calibration was computed from
+    exactly these inputs (annotations, poses, blob detections, fit
+    parameters).  stale: recordings present in the cache but not usable
+    (input changed, or a legacy v1 entry with no fingerprint at all).
+    v1 name-keyed caches are never trusted: the 2026-10-31 code review
+    noted their key covered neither the inputs nor the code (E11
+    prereq 2)."""
+    if not os.path.exists(cache_path):
+        return {}, []
+    with open(cache_path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or data.get("version") != 2:
+        legacy = sorted(k for k in data) if isinstance(data, dict) else []
+        return {}, legacy
+    usable, stale = {}, []
+    for rec, entry in data.get("recordings", {}).items():
+        if entry.get("fingerprint") == fingerprints.get(rec):
+            usable[rec] = entry["calib"]
+        else:
+            stale.append(rec)
+    return usable, sorted(stale)
+
+
+def save_calib_cache(cache_path: str, fingerprints: dict,
+                     calib_dicts: dict) -> None:
+    """Write the v2 cache: {version, recordings: {rec: {fingerprint,
+    calib}}}.  Called after every run (hits included) so the file
+    self-heals."""
+    data = {"version": 2, "recordings": {
+        rec: {"fingerprint": fingerprints[rec], "calib": calib_dicts[rec]}
+        for rec in sorted(calib_dicts)}}
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--paired", default="data/paired/uxo")
@@ -96,12 +141,15 @@ def main():
     ap.add_argument("--use-cache", action="store_true",
                     help="load cached calibrations from projection_calib.json "
                          "instead of re-running calibrate() (~10 min per "
-                         "recording); the cache is (re)written every run")
+                         "recording); entries are keyed by an input "
+                         "fingerprint (annotations + poses + blob "
+                         "detections + fit parameters), mismatches are "
+                         "recomputed and the cache is rewritten every run")
     args = ap.parse_args()
 
     from aodet.datasets.converters.uxo_projection import (
-        CalibResult, anchor_b_rng, calibrate, load_observations,
-        project_uxo_sonar)
+        CalibResult, anchor_b_rng, calibrate, calib_fingerprint,
+        load_observations, project_uxo_sonar)
     from aodet.datasets.paired_format import PairedData, write_paired
 
     with open(os.path.join(args.paired, "camera.json")) as f:
@@ -112,26 +160,40 @@ def main():
                          for r in frame_meta}
 
     cache_path = os.path.join(args.paired, "projection_calib.json")
-    cache = {}
-    if args.use_cache and os.path.exists(cache_path):
-        with open(cache_path, encoding="utf-8") as f:
-            cache = json.load(f)
-        print(f"calibrations from cache -> {cache_path}")
-
     recs = load_observations(args.paired)
+    # E11 prereq 2: fingerprint-keyed cache.  The fingerprint covers the
+    # observations + fit parameters, so a hit guarantees the cached
+    # calibration was computed from these exact inputs; the v1 name key
+    # could silently reuse a calibration made from different
+    # labels/poses/parameters.
+    fingerprints = {rec: calib_fingerprint(rec, obs, args.min_frames)
+                    for rec, obs in recs.items()}
+    usable, stale = {}, []
+    if args.use_cache:
+        usable, stale = load_calib_cache(cache_path, fingerprints)
+        if stale:
+            print(f"calib cache stale (inputs changed): "
+                  f"{', '.join(stale)} -> recomputing")
+        print(f"calibrations from cache -> {cache_path} "
+              f"({len(usable)}/{len(recs)} hit)")
+    calib_dicts = {}
+
     report, all_entries, obs_by_sample = {}, {}, {}
     for rec in sorted(recs):
         obs = recs[rec]
         anchor = None
-        if rec in cache:
-            calib = _calib_from_dict(cache[rec])
+        if rec in usable:
+            cache_state = "hit"
+            calib_dicts[rec] = usable[rec]
+            calib = _calib_from_dict(usable[rec])
         else:
+            cache_state = "miss"
             calib = calibrate(rec, obs, min_frames=args.min_frames)
             # E05 fix: move the range-offset the (P_radial, b_rng)
             # degeneracy leaked into P back into b_rng, anchored on the
             # bearing-gated blob frames (see anchor_b_rng docstring)
             calib, anchor = anchor_b_rng(calib, obs)
-            cache[rec] = _calib_to_dict(calib)
+            calib_dicts[rec] = _calib_to_dict(calib)
         entries = project_uxo_sonar(args.paired, calib, obs)
         all_entries.update(entries)
         for o in obs:
@@ -144,6 +206,7 @@ def main():
                for s in ("blob", "projected")}
         n_target = sum(1 for o in obs if o.category_id is not None)
         report[rec] = dict(
+            cache=cache_state,
             anchor=anchor,
             yaw_sign=calib.yaw_sign,
             yaw_span_deg=round(calib.yaw_span_deg, 1),
@@ -175,10 +238,11 @@ def main():
         json.dump(report, f, indent=2, ensure_ascii=False)
     print(f"report -> {out_json}")
 
-    if not args.use_cache:
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2)
-        print(f"calib cache ({len(cache)} recordings) -> {cache_path}")
+    # always rewritten, also on --use-cache runs: recomputed stale
+    # entries must persist or the next run recalibrates them again
+    save_calib_cache(cache_path, fingerprints, calib_dicts)
+    print(f"calib cache ({len(calib_dicts)} recordings, "
+          f"fingerprint-keyed) -> {cache_path}")
 
     if args.contact_sheet:
         ann_of_img = {a["image_id"]: a["bbox"]

@@ -51,6 +51,17 @@ near-constant range row while line flybys sweep it across the image;
 see doc/logs/2026-10-31-e05-test-ap-zero-diagnosis.md).  The bomb
 appears in a single sample recording so test cannot cover it -- the
 full dataset has no such restriction.
+
+E11 additions (rethink 2026-11-01, 代码与数据前置项 item 3): a
+three-way split via ``split_manifest`` (recording -> train|val|test,
+plus a per-recording ``moving_target`` flag carried into frame_meta.csv),
+a per-recording frame cap sampled evenly over the trajectory
+(``max_frames_per_recording``; long recordings must not dominate), and
+a same-distribution holdout carved from each train recording's time
+tail (``val_id_tail_frac`` of frames become split=val_id, preceded by
+``val_id_gap_frac`` unused frames so the blocks do not touch).  With
+the new arguments at their defaults the converter's output is the
+legacy two-way behaviour plus the new ``moving_target`` column.
 """
 
 from __future__ import annotations
@@ -124,18 +135,68 @@ def _link_or_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
+def _even_subsample(items: List[str], cap: Optional[int]) -> List[str]:
+    """``cap`` entries evenly spaced over ``items`` (sorted frame order =
+    trajectory order), both ends included.  Deterministic; the long
+    middle of a recording must not dominate short ones (E11 rule:
+    按录音封顶的时间均匀采样)."""
+    if cap is None or len(items) <= cap:
+        return items
+    step = (len(items) - 1) / (cap - 1)
+    return [items[int(round(i * step))] for i in range(cap)]
+
+
+def _train_roles(n: int, tail: float, gap: float) -> List[Optional[str]]:
+    """Per-frame split labels for a train recording's kept frames: the
+    time-tail ``tail`` fraction becomes ``val_id`` (the
+    same-distribution holdout that measures the ceiling), preceded by
+    ``gap`` fraction of unused frames (None) so the blocks do not touch
+    (E11 rule: train 录音时间尾块留出 + 空 5%).  Recordings too short to
+    carve (fewer than 8 kept frames, or a carve that would empty the
+    train block) stay fully train -- visible in the report, not
+    silent."""
+    if tail <= 0.0 or n < 8:
+        return ["train"] * n
+    n_tail = max(1, int(round(n * tail)))
+    n_gap = int(round(n * gap))
+    if n_tail + n_gap >= n:
+        return ["train"] * n
+    return (["train"] * (n - n_tail - n_gap) + [None] * n_gap
+            + ["val_id"] * n_tail)
+
+
 def convert(src_root: str, out_root: str,
             test_recordings=DEFAULT_TEST_RECORDINGS,
             include_unlabeled: bool = False,
             stride: int = 1,
-            contact_sheet: Optional[str] = None) -> Dict[str, Any]:
+            contact_sheet: Optional[str] = None,
+            split_manifest: Optional[Dict[str, Any]] = None,
+            max_frames_per_recording: Optional[int] = None,
+            val_id_tail_frac: float = 0.0,
+            val_id_gap_frac: float = 0.05) -> Dict[str, Any]:
     """Convert one or more UXO recordings into the paired format.
+
+    ``split_manifest`` (E11): a json dict mapping each recording to
+    {"split": train|val|test, "moving_target": bool, "excluded": bool,
+    ...} -- either bare or under a "recordings" key.  It overrides
+    ``test_recordings``; ``excluded`` recordings are skipped entirely
+    (calibration-quality filter, rethink 划分规则).  ``moving_target``
+    lands in frame_meta.csv as a per-frame column.
 
     Returns a per-recording report dict (frames kept / skipped by
     reason, class counts); print it or assert on it in tests.
     """
     if stride < 1:
         raise ValueError("stride must be >= 1")
+    if max_frames_per_recording is not None and max_frames_per_recording < 1:
+        raise ValueError("max_frames_per_recording must be >= 1")
+    if not 0.0 <= val_id_tail_frac < 1.0 or not 0.0 <= val_id_gap_frac < 1.0:
+        raise ValueError("val_id fractions must be in [0, 1)")
+    man = split_manifest or {}
+    man = man.get("recordings", man)
+    for rec, m in man.items():
+        if m.get("split") not in (None, "train", "val", "test"):
+            raise ValueError(f"{rec}: bad manifest split {m.get('split')!r}")
     cat_id = {name: i + 1 for i, name in enumerate(CATEGORIES)}
     test_set = set(test_recordings)
 
@@ -166,7 +227,23 @@ def convert(src_root: str, out_root: str,
         stats = {"split": "", "kept": 0, "unlabeled_skipped": 0,
                  "label_without_gopro": 0, "annotated_without_aris": 0,
                  "no_gantry": 0, "stride_skipped": 0, "classes": {}}
-        stats["split"] = "test" if rec in test_set else "train"
+        m = man.get(rec, {})
+        if m.get("excluded"):
+            stats.update(split="excluded",
+                         exclude_reason=m.get("exclude_reason", ""),
+                         moving_target="true" if m.get("moving_target")
+                         else "false")
+            report["recordings"][rec] = stats
+            continue
+        if m.get("split"):
+            stats["split"] = m["split"]
+            stats["split_source"] = "manifest"
+        else:
+            stats["split"] = "test" if rec in test_set else "train"
+            stats["split_source"] = "default"
+        moving_flag = ("true" if m.get("moving_target")
+                       else "false" if rec in man else "")
+        stats["moving_target"] = moving_flag
 
         def _frames(sub: str, ext: str) -> set:
             d = os.path.join(rd, sub)
@@ -183,6 +260,7 @@ def convert(src_root: str, out_root: str,
         gantry = _read_csv_rows(os.path.join(rd, "gantry.csv"))
         n_beams, n_samples = _sensor_constants(rd)
 
+        cand: List[str] = []
         for idx in sorted(gopro & aris):  # a pair needs both modalities
             has_label = idx in labels
             if not has_label and not include_unlabeled:
@@ -195,7 +273,19 @@ def convert(src_root: str, out_root: str,
             if int(idx) not in gantry:  # gantry keys are int frame indices
                 stats["no_gantry"] += 1
                 continue
+            cand.append(idx)
 
+        kept = _even_subsample(cand, max_frames_per_recording)
+        stats["capped_skipped"] = len(cand) - len(kept)
+        roles = (_train_roles(len(kept), val_id_tail_frac, val_id_gap_frac)
+                 if stats["split"] == "train" else [stats["split"]] * len(kept))
+        stats["val_id_frames"] = sum(1 for r in roles if r == "val_id")
+        stats["gap_unused"] = sum(1 for r in roles if r is None)
+
+        for idx, role in zip(kept, roles):
+            if role is None:  # the unused gap between train and val_id
+                continue
+            has_label = idx in labels
             sample_id = f"{rec}_{idx}"
             cam_rel = f"images/camera/{sample_id}.jpg"
             son_rel = f"images/sonar/{sample_id}.pgm"
@@ -215,9 +305,10 @@ def convert(src_root: str, out_root: str,
                 "sample_id": sample_id,
                 "camera_image_id": next_id,
                 "sonar_image_id": next_id,
-                "split": stats["split"],
+                "split": role,
                 "recording": rec,
                 "frame_idx": int(idx),
+                "moving_target": moving_flag,
                 "source_path_camera": f"{rec}/gopro/{idx}.jpg",
                 "source_path_sonar": f"{rec}/aris_raw/{idx}.pgm",
                 "gantry_x": gantry[int(idx)].get("x", ""),
@@ -313,16 +404,38 @@ def main() -> None:
                          "negatives; only after manual review)")
     ap.add_argument("--stride", type=int, default=1,
                     help="keep every Nth frame by frame index (default 1)")
+    ap.add_argument("--splits-json", default=None,
+                    help="recording split manifest json (each recording: "
+                         "split train|val|test, moving_target bool, "
+                         "excluded bool); overrides --test-recs (E11)")
+    ap.add_argument("--max-frames", type=int, default=None,
+                    help="per-recording cap on kept frames, sampled "
+                         "evenly over the trajectory (E11 rule: 150)")
+    ap.add_argument("--val-id-tail", type=float, default=0.0,
+                    help="fraction of each train recording's kept frames "
+                         "reserved as the same-distribution val_id tail "
+                         "(E11 rule: 0.15)")
+    ap.add_argument("--val-id-gap", type=float, default=0.05,
+                    help="unused gap fraction between the train and "
+                         "val_id blocks (E11 rule: 0.05)")
     ap.add_argument("--contact-sheet", default=None,
                     help="write a jpg grid of sampled annotated frames "
                          "to this path")
     args = ap.parse_args()
     test_recs = tuple(r for r in
                       (s.strip() for s in args.test_recs.split(",")) if r)
+    manifest = None
+    if args.splits_json:
+        with open(args.splits_json, encoding="utf-8") as f:
+            manifest = json.load(f)
     report = convert(args.src, args.out, test_recordings=test_recs,
                      include_unlabeled=args.include_unlabeled,
                      stride=args.stride,
-                     contact_sheet=args.contact_sheet)
+                     contact_sheet=args.contact_sheet,
+                     split_manifest=manifest,
+                     max_frames_per_recording=args.max_frames,
+                     val_id_tail_frac=args.val_id_tail,
+                     val_id_gap_frac=args.val_id_gap)
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
 

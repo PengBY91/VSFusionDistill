@@ -226,3 +226,171 @@ def test_rerun_is_deterministic(tmp_path):
     r2 = convert(str(src), str(out), test_recordings=(REC_B,))
     c2 = (out / "camera.json").read_text()
     assert c1 == c2 and r1 == r2
+
+
+# --------------------------------------------------------------------------
+# E11 prereq 3 (rethink 2026-11-01, 代码与数据前置项 item 3): manifest
+# three-way split, per-recording cap, val-ID tail, moving_target column
+# --------------------------------------------------------------------------
+REC_C = "2023-01-03_110000"
+
+
+def _make_fake_uxo_long(src, n_frames=20, rec=REC_C):
+    """One recording with n_frames consecutive fully-annotated frames."""
+    for sub in ("gopro", "aris_raw", "labels"):
+        (src / rec / sub).mkdir(parents=True, exist_ok=True)
+    (src / rec / "aris_file_meta.yaml").write_text(
+        "NumRawBeams: 64\nSamplesPerChannel: 100\n")
+    label = {"class": "mortar_shell", "x_min": 100, "y_min": 50,
+             "x_max": 200, "y_max": 90}
+    idxs = [f"{i:04d}" for i in range(n_frames)]
+    for i in idxs:
+        _write_frame(src / rec, i, label=label)
+    with open(src / rec / "gantry.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["aris_frame_idx", "x", "y", "z"])
+        for i in idxs:
+            w.writerow([int(i), 0.1 * int(i), -0.2, -0.25])
+    with open(src / rec / "aris_frame_meta.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["FrameIndex", "FrameTime", "sonarTimeStamp",
+                    "WindowStart", "WindowLength", "SamplePeriod",
+                    "ReceiverGain", "Intensity", "Focus", "SoundSpeed",
+                    "TargetRange", "TargetBearing"])
+        for i in idxs:
+            w.writerow([int(i), 1695233343329067, 1695233252025080,
+                        0.69, 2.32, 4.0, 10, 28, 528, 1491.3, 3.2, -0.4])
+    return src
+
+
+def test_manifest_three_way_split_and_moving_target(tmp_path):
+    src = _make_fake_uxo(tmp_path / "src")
+    out = tmp_path / "paired"
+    manifest = {"recordings": {
+        REC_A: {"split": "train", "moving_target": False},
+        REC_B: {"split": "val", "moving_target": True}}}
+    report = convert(str(src), str(out), split_manifest=manifest)
+    data = read_paired(str(out))
+    by_sid = {m["sample_id"]: m for m in data.frame_meta}
+    assert by_sid[f"{REC_A}_0100"]["split"] == "train"
+    assert by_sid[f"{REC_A}_0100"]["moving_target"] == "false"
+    assert by_sid[f"{REC_B}_0200"]["split"] == "val"    # not test
+    assert by_sid[f"{REC_B}_0200"]["moving_target"] == "true"
+    assert report["recordings"][REC_A]["split_source"] == "manifest"
+    assert report["recordings"][REC_B]["split"] == "val"
+    # legacy default path: no manifest -> moving_target unknown ("")
+    src2 = _make_fake_uxo(tmp_path / "src2")
+    convert(str(src2), str(tmp_path / "paired2"), test_recordings=(REC_B,))
+    data2 = read_paired(str(tmp_path / "paired2"))
+    assert {m["moving_target"] for m in data2.frame_meta} == {""}
+
+
+def test_train_tail_carves_val_id_with_gap(tmp_path):
+    src = _make_fake_uxo_long(tmp_path / "src", n_frames=20)
+    out = tmp_path / "paired"
+    report = convert(str(src), str(out),
+                     split_manifest={"recordings": {REC_C: {"split":
+                                                           "train"}}},
+                     val_id_tail_frac=0.15, val_id_gap_frac=0.05)
+    data = read_paired(str(out))
+    rows = sorted(data.frame_meta, key=lambda m: int(m["frame_idx"]))
+    # 20 kept frames: n_tail = round(20*0.15) = 3, n_gap = round(20*0.05)
+    # = 1 -> 16 train, frame 0016 dropped as the gap, 0017-0019 val_id
+    assert [m["split"] for m in rows] == ["train"] * 16 + ["val_id"] * 3
+    assert [int(m["frame_idx"]) for m in rows][-3:] == [17, 18, 19]
+    assert not any(int(m["frame_idx"]) == 16 for m in rows)
+    a = report["recordings"][REC_C]
+    assert (a["kept"], a["val_id_frames"], a["gap_unused"]) == (19, 3, 1)
+
+
+def test_short_train_recording_not_carved(tmp_path):
+    """Fewer than 8 kept frames: no carve-out, all frames stay train
+    (a 2-frame val_id block measures nothing)."""
+    src = _make_fake_uxo(tmp_path / "src")
+    out = tmp_path / "paired"
+    report = convert(str(src), str(out),
+                     split_manifest={"recordings": {REC_A: {"split":
+                                                           "train"}}},
+                     val_id_tail_frac=0.15, val_id_gap_frac=0.05)
+    data = read_paired(str(out))
+    assert {m["split"] for m in data.frame_meta
+            if m["recording"] == REC_A} == {"train"}
+    a = report["recordings"][REC_A]
+    assert a["val_id_frames"] == 0 and a["gap_unused"] == 0
+
+
+def test_cap_subsamples_evenly(tmp_path):
+    src = _make_fake_uxo_long(tmp_path / "src", n_frames=20)
+    out = tmp_path / "paired"
+    report = convert(str(src), str(out),
+                     split_manifest={"recordings": {REC_C: {"split":
+                                                           "test"}}},
+                     max_frames_per_recording=10)
+    data = read_paired(str(out))
+    kept = sorted(int(m["frame_idx"]) for m in data.frame_meta)
+    # evenly spaced over the 0..19 trajectory, both ends included
+    # (step 19/9: positions round(i*2.111))
+    assert kept == [0, 2, 4, 6, 8, 11, 13, 15, 17, 19]
+    a = report["recordings"][REC_C]
+    assert (a["kept"], a["capped_skipped"]) == (10, 10)
+
+
+def test_manifest_excluded_recording_skipped(tmp_path):
+    src = _make_fake_uxo(tmp_path / "src")
+    out = tmp_path / "paired"
+    manifest = {"recordings": {
+        REC_A: {"split": "train"},
+        REC_B: {"split": "test", "excluded": True,
+                "exclude_reason": "row residual p50 > 10 px"}}}
+    report = convert(str(src), str(out), split_manifest=manifest)
+    data = read_paired(str(out))
+    b = report["recordings"][REC_B]
+    assert b["split"] == "excluded" and b["kept"] == 0
+    assert b["exclude_reason"] == "row residual p50 > 10 px"
+    assert not any(m["recording"] == REC_B for m in data.frame_meta)
+    assert any(m["recording"] == REC_A for m in data.frame_meta)
+
+
+def test_e11_invocation_roundtrip_and_deterministic(tmp_path):
+    """往返测试 (E11 prereq 3): the full E11 invocation (manifest +
+    cap 30 + tail 0.15 / gap 0.05) round-trips through read_paired with
+    the bookkeeping the report claims, and a rerun is byte-identical."""
+    src = _make_fake_uxo(tmp_path / "src")
+    _make_fake_uxo_long(src, n_frames=40)
+    out = tmp_path / "paired"
+    manifest = {"seed": 0, "recordings": {
+        REC_A: {"split": "train", "moving_target": False},
+        REC_B: {"split": "val", "moving_target": True},
+        REC_C: {"split": "train", "moving_target": True}}}
+    report = convert(str(src), str(out), split_manifest=manifest,
+                     max_frames_per_recording=30,
+                     val_id_tail_frac=0.15, val_id_gap_frac=0.05)
+    data = read_paired(str(out))
+    assert {m["split"] for m in data.frame_meta} <= {"train", "val",
+                                                     "val_id"}
+    # val_id rows live on train recordings only
+    assert {m["recording"] for m in data.frame_meta
+            if m["split"] == "val_id"} <= {REC_A, REC_C}
+    for rec, meta in manifest["recordings"].items():
+        rows = [m for m in data.frame_meta if m["recording"] == rec]
+        assert rows, rec
+        assert {m["moving_target"] for m in rows} == (
+            {"true"} if meta["moving_target"] else {"false"})
+        assert len(rows) == report["recordings"][rec]["kept"]
+    # REC_C: 40 candidates -> cap 30 -> roles on 30 kept (banker's
+    # rounding): n_tail = round(4.5) = 4, n_gap = round(1.5) = 2
+    c = report["recordings"][REC_C]
+    assert (c["kept"], c["val_id_frames"], c["gap_unused"]) == (28, 4, 2)
+    c_rows = sorted((int(m["frame_idx"]), m["split"]) for m in
+                    data.frame_meta if m["recording"] == REC_C)
+    assert [s for _, s in c_rows].count("val_id") == 4
+    # the val_id block is the trajectory tail (largest frame indices)
+    assert all(s == "val_id" for _, s in c_rows[-4:])
+    # rerun determinism
+    c1 = (out / "camera.json").read_text()
+    f1 = (out / "frame_meta.csv").read_text()
+    convert(str(src), str(out), split_manifest=manifest,
+            max_frames_per_recording=30, val_id_tail_frac=0.15,
+            val_id_gap_frac=0.05)
+    assert (out / "camera.json").read_text() == c1
+    assert (out / "frame_meta.csv").read_text() == f1

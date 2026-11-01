@@ -63,7 +63,8 @@ from scipy.spatial.transform import Rotation
 from ...geometry.aris_beam_table import (beam_center_deg, col_of_angle,
                                          range_of_row, row_of_range)
 
-__all__ = ["CalibResult", "FrameObs", "calibrate", "load_observations",
+__all__ = ["CALIB_CACHE_VERSION", "CalibResult", "FrameObs", "calibrate",
+           "calib_fingerprint", "fit_params", "load_observations",
            "project_uxo_sonar", "detect_blobs", "fit_circle", "predict"]
 
 # --- static chain from calibration/transforms.yaml (quats x,y,z,w) --------
@@ -120,6 +121,68 @@ _GATE_RNG = 0.20    # blob-vs-projection consistency gate (m)
 _PROJ_BOX_MAX = (40.0, 60.0)
 _OUTLIER_AZ_DEG = 6.0   # calibration blob rejection gate
 _OUTLIER_RNG_M = 0.5
+
+# Bump when the fingerprint serialisation or the on-disk cache layout
+# changes.  v1 caches (recording-name-keyed, no fingerprints) are never
+# trusted -- the 2026-10-31 code review noted their key covered neither
+# the inputs nor the parameters (E11 prereq 2).
+CALIB_CACHE_VERSION = 2
+
+
+def fit_params(min_frames: int = 20) -> dict:
+    """Constants parameterising calibrate()/anchor_b_rng()/sonar_bbox().
+
+    Any of them can change a calibration, so all of them take part in
+    the calibration-cache fingerprint (E11 prereq 2, rethink 2026-11-01
+    代码与数据前置项 item 2: the cache key must cover source annotations
+    + poses + parameters)."""
+    return {
+        "cache_version": CALIB_CACHE_VERSION,
+        "min_frames": int(min_frames),
+        "sig_ang": _SIG_ANG, "sig_rng": _SIG_RNG,
+        "sig_b_prior": _SIG_B_PRIOR, "b_rng_max": _B_RNG_MAX,
+        "p_below_head_m": _P_BELOW_HEAD_M,
+        "cand_min_sep_m": _CAND_MIN_SEP_M,
+        "gate_col": _GATE_COL, "gate_rng": _GATE_RNG,
+        "proj_box_max": list(_PROJ_BOX_MAX),
+        "outlier_az_deg": _OUTLIER_AZ_DEG,
+        "outlier_rng_m": _OUTLIER_RNG_M,
+        "class_length_m": dict(CLASS_LENGTH_M),
+        "k_linear": K_LINEAR.tolist(),
+    }
+
+
+def calib_fingerprint(recording: str, obs: Sequence[FrameObs],
+                      min_frames: int = 20) -> str:
+    """sha256 over everything calibrate()+anchor_b_rng() consume for one
+    recording, in observation order: gantry poses, per-frame window /
+    sample period / sound speed, camera GT (bearing ray, ann id,
+    category), the blob detection with its derived beam angle and
+    range, plus the fit parameters (fit_params).  Raw sonar images
+    enter through the blob detections -- the only image content
+    calibrate() sees -- so images with identical detections legitimately
+    share a fingerprint, while any edit to labels, poses or parameters
+    changes the key.  Replaces the recording-name cache key (E11
+    prereq 2; ~10 min per recording on the full ~100-recording set,
+    ~17 h if every rerun recomputed)."""
+    import hashlib
+    h = hashlib.sha256()
+    h.update(("uxo-calib|" + recording + "|").encode())
+    h.update(repr(fit_params(min_frames)).encode())
+    for o in obs:
+        h.update(repr([
+            o.frame_idx, o.sample_id,
+            [format(v, ".17g") for v in o.gantry],
+            format(o.window_start, ".17g"),
+            format(o.sample_period, ".17g"),
+            format(o.soundspeed, ".17g"),
+            None if o.cam_ray is None else [
+                format(v, ".17g") for v in o.cam_ray],
+            o.cam_ann_id, o.category_id,
+            None if o.blob is None else [
+                format(v, ".17g") for v in o.blob],
+            format(o.theta, ".17g"), format(o.rng, ".17g")]).encode())
+    return h.hexdigest()
 
 
 def _quat2r(q: Sequence[float]) -> np.ndarray:
