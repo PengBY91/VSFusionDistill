@@ -2,7 +2,7 @@
 title: 选题 F2 相机退化下的声光融合检测：清晰视角特权蒸馏与支路独立性（草案）
 aliases: ["选题 F2 相机退化下的声光融合检测：清晰视角特权蒸馏与支路独立性（草案）", "F2 草案"]
 created: 2026-10-19
-updated: 2026-10-29
+updated: 2026-11-01
 type: plan
 status: draft
 status_note: "idea-draft：讨论形成，未评审；启动条件 G0–G2 均未满足，不占用 A/B 与 F1 资源"
@@ -46,11 +46,12 @@ keywords: [knowledge-distillation, heterogeneous-distillation, privileged-inform
 
 ### 0.4 当前状态
 
-以下状态截至 2026-10-19。
+以下状态截至 2026-11-01，细节见 `doc/f2-rethink-2026-11-01.md` 与 `doc/experiments.md`。
 
-- 现在只有本草案，没有做过任何实验。
-- 三个启动条件都未满足（第 7 节）。第 0 步问题核验还没做。H1 的浊度数据要等 ROV 到货后约 5 个月才有。C 的 M3 错误归因还没开始。
-- 计划中的执行人是 F1 结束后（2027-02 中旬起）的下一位算法实习生，或者 F1 实习生的后续工作。A/B 主攻期间不抽调人力。
+- RSFusionDet 官方代码与数据不可得，S0 数据路线定为 b（UXO 自建）。第 3 节、第 6.1 节中以 RSFusion 为主数据的写法保留为原始设计，实际执行以复盘页为准。
+- 在 UXO sample（5 条录音）上完成了 E01–E10：管线、GT 与训练配方已修好；E10 首次跑了 M3 对 B3，但声呐支路一直在地板上，G0（RQ-0）状态为不可测，不是通过。
+- 2026-11-01 复盘后：研究问题不变；主假设收窄为 H-cls（光学的特权信息主要是类别，需跨模态路由才能进声呐头）；测量平台迁到全量 UXO 类别均衡划分（E11 已预登记）。
+- 启动条件 G1（H1 浊度数据）与 G2（C 的下游需求）仍未满足，当前投入是否计入 G0 范围待确认（复盘 §7）。
 
 ## 1 问题陈述：六环链条
 
@@ -419,7 +420,8 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 
 ## 13 关联页面
 
-- 实施准备：[[plans/2026-10/topic-f2-codebase-selection-and-setup-2026-10|F2 代码库选型与搭建方案]]（2026-10-29；RSFusionDet 仓库为空，S0 数据路线待决）
+- 实施准备：[[plans/2026-10/topic-f2-codebase-selection-and-setup-2026-10|F2 代码库选型与搭建方案]]（2026-10-29；本仓库副本已于 2026-11-01 删除，仍有效的事实并入 `doc/f2-rethink-2026-11-01.md` §6）
+- 思路复盘与路线：`doc/f2-rethink-2026-11-01.md`（2026-11-01）
 - 父课题与兄弟课题：[[plans/2026-10/topic-f-low-label-sonar-adaptation-detailed-2026-10|F 详案]] · [[plans/2026-10/intern-project-2026-f1-sonar-low-label-adaptation-2026-10|F1 v1.4]] · [[projects/f1-sonar-low-label|F1 项目主页]]
 - 使用方与数据供给：[[plans/2026-10/topic-c-persistent-target-mapping-detailed-2026-10|C 详案]] · [[plans/2026-10/intern-project-2026-h1-rov-platform-testbed-2026-10|H1]] · [[plans/2026-07/turbidity-aware-week1-2-experiment-protocol|浊度协议]]
 - 原则来源：[[plans/2026-10/topic-a-direction-aware-localization-detailed-2026-10|A 详案 v2.4]]（H-A1） · [[plans/2026-10/topic-b-ambiguity-aware-spatial-mapping-detailed-2026-10|B 详案 v2.3]]（§3.3 否定结果）
@@ -434,7 +436,7 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 
 ### 14.1 待决（团队或指导人决定，阻塞后续）
 
-- [ ] **S0 数据路线**：从三条路里选。a 是联系作者；b 是在 UXO 上自建；c 是等 H1。方案页建议 a 和 b 并行（方案页第 6 节）。
+- [x] **S0 数据路线**：定为 b（UXO 上自建），a 继续监视。（2026-10-30 起执行）
 - [ ] **F1 W2 框架是否也定为 mmdetection**：如果定了，F1 和 F2 共用 `ao-det` 仓库、划分脚本、M₀ 和评测（方案页 4.4 第 8 条）。
 - [ ] **训练机器**：需要 24 GB 级显卡，并且能放下 UXO 全量 96 GB（解压后更大）。（硬件阻塞已解除：2026-10-31 发现本机已挂 RTX 5090 D v2 24 GB，磁盘 944 GB 可用；`.venv-gpu` 环境已建并验证：pinned cu121 栈在 Blackwell sm_120 上实测不可用（无内核映像），改用 torch 2.7.1+cu128 + mmcv 2.1.0 CPU-only 源码构建 + 推理期 NMS CPU 回退，全套测试通过，S0-lite 可在本机跑，见 `env/ENVIRONMENT.md`；是否用本机承担全量训练仍与 F1 W1 合并待团队确认）
 - [ ] **库内"已开源"表述是否更正**：涉及三处，见 14.4。
@@ -444,7 +446,7 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 - [ ] 路线 a：由团队向 RSFusionDet 作者发邮件，索取代码和 RSFusion 数据，并说明用途和引用方式。邮件由团队成员发送。
 - [ ] 每两周检查一次 `LEFTeyex/RSFusionDet`。看到提交时，记录 commit、框架版本和数据下载方式。（机制已建立：`tools/check_rsfusiondet.sh` + `doc/logs/rsfusiondet-watch.log`；2026-10-29/30 两次核验均为空仓库）
 - [x] 路线 b：下载 UXO `sample.7z`（1.7 GB）。用官方 `dfki-ric/uxo-dataset2024` 的脚本读取，核验三件事：标签坐标"乘 3"的规则；issue 报告的框与原始 GoPro 帧对不上的问题；外参。（2026-10-30 完成：md5 精确匹配；①×3 规则定量+目检成立（labels 在 640×360 空间、随包 jpg 为 1920×1080，×3 框在 2 个 recording 样帧上套住目标）；②"对不上"成因=把 ×3 框套到 5.3K 原始帧（缩放比 2.77≠3），随包 jpg 上不复现，转换器以随包 jpg 为准；③外参齐备（transforms.yaml TF 树+4 份 GoPro 内参+逐帧 gantry/ARIS 元数据）。类别 3 种 2616 标注帧。详见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
-- [ ] 根据 sample 的核验结果，决定是否下载全量，以及下载哪几个包（`data_export_polar` 16.5 GB、`data_processed` 61.5 GB 等）。
+- [ ] 根据 sample 的核验结果，决定是否下载全量，以及下载哪几个包（`data_export_polar` 16.5 GB、`data_processed` 61.5 GB 等）。（2026-11-01 复盘建议下载，作为 E11 前置项，待用户决定）
 - [x] UXO 声呐框投影：用官方位姿和标定投影，同时生成跨模态对应 π；抽样做人工目检，记录投影误差。（2026-10-31 完成：`aodet/datasets/converters/uxo_projection.py` 逐 recording 三阶段稳健标定（相机方位→[R_son,b_rng]→10 参联合 Huber）+ `tools/project_uxo_sonar.py`；合成水槽 9 测试覆盖极坐标/瞄准×弧线/直线四几何，P↔b 退化用先验+|b|≤0.8 m 硬界处理。实数据 2573 帧全部落框：blob 门控 1185 / 几何投影 1388 / 丢弃 0，pairs.csv π 就绪。误差如实记录：直线录音最好（dcol p50 0.75–1.23 beams）；弧线录音存在 ~2° rms 的未建模时变瞄准残差（行程端部达 10–30 beams）；100927 的 b 顶在 −0.8 界上、P_z 偏深（该录音退化活跃）。已知局限与非作者人工目检待办见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]投影一节。）
 - [ ] `project_uxo_sonar.py` 加 `--calib-cache`：逐 recording 标定结果（含逐帧拟合诊断）落盘复用，键=输入指纹（源标注+位姿+参数的 hash）。动因：GT 语义修正后 `--write` 重写时，与 dry-run 完全相同的标定被从零重算：~50 分钟里 ~49 分钟是重复计算；全量 UXO（96 GB、数十 recording）会按比例放大这笔浪费。须在**全量转换前**完成，并加缓存命中/未命中结果一致的等价测试。
 - [ ] UMOD：只做 objectness 小样本 sanity check，不再列为外部测试集；以后补全了再评估。
@@ -460,8 +462,8 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 - [x] W2：方案页 4.5 的测试全部通过。测试包括退化单调性与确定性、几何一致性、转换器往返、相关性指标、逐支路 AP 对拍；失败时返回非零退出码。（2026-10-30，55 项测试全绿；[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [x] W2：确定声呐输入用极坐标矩形图还是扇形图。要结合团队声呐只能输出图像的判定，并考虑 L_xp 实现时的便利。（2026-10-30，定为极坐标矩形图、x=方位角升序、0° 居中；依据与对 L_xp 的影响见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]）
 - [x] W3：双流 YOLOX-S 加三个头（相机头、融合声呐头、未耦合声呐头），关闭 Mosaic 和 MixUp。（2026-10-30，`TwoStreamYOLOX`+`configs/f2/` 两份 S0-lite 配置；合成数据端到端冒烟通过）
-- [ ] W3：S0-lite，训练 B0 和交叉注意力融合各 1 个种子，做 D0–D4 推理期扫描，输出逐支路 AP 表和相关性表。（执行中：本机 5090 GPU 环境就绪后首跑 B0 100 epochs 训练收敛但 AP=0.001：诊断出投影框半幅图 vs blob 框紧凑的两套 GT 尺度（测试集 66% 中毒），GT 语义修正为"可见回波区域"（`_PROJ_BOX_MAX=(40,60)` 钳制）后重写 GT 重训中；过程含 schedule/run_seeds 两处配套修复与 3 例新配置测试，见[[logs/2026-10-30-f2-codebase-w1-w3|日志]]，2026-10-31）
-- [ ] W3 结束：根据 S0-lite 的结果决定是否扩到 3 个种子和全量 UXO；结论写回本草案第 3 节和第 7.2 节 F2-M0。
+- [x] W3：S0-lite，训练 B0 和交叉注意力融合各 1 个种子，做 D0–D4 推理期扫描，输出逐支路 AP 表和相关性表。（2026-10-31 至 11-01 经 E04–E09 完成；声呐读数在地板，相关性表无信息量，见 `doc/experiments.md`）
+- [x] W3 结束：根据 S0-lite 的结果决定是否扩到 3 个种子和全量 UXO。（2026-11-01：S0-lite 平台测不出声呐效应，扩到全量 UXO 均衡划分 + 3 种子，见 E11；F2-M0 状态记为不可测）
 - [x] 后续：先写在线冻结教师；离线教师缓存要通过等价测试后才能启用（方案页 4.4 第 4 条）。（2026-10-30，在线 `FrozenTeacher`+branch_kd 已实现并有测试；缓存按约定延后）
 
 ### 14.4 wiki 更正（待 14.1 最后一项决定）
