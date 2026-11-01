@@ -194,6 +194,12 @@ def main():
             # bearing-gated blob frames (see anchor_b_rng docstring)
             calib, anchor = anchor_b_rng(calib, obs)
             calib_dicts[rec] = _calib_to_dict(calib)
+            # save after every computed calibration, not only at the
+            # end: the full-set run is hours long and one crash mid-run
+            # used to lose every fit so far.  The rewrite is
+            # O(#recordings) JSON, cheap next to one calibration, and
+            # drops stale entries exactly like the final save.
+            save_calib_cache(cache_path, fingerprints, calib_dicts)
         entries = project_uxo_sonar(args.paired, calib, obs)
         all_entries.update(entries)
         for o in obs:
