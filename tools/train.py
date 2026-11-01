@@ -15,6 +15,18 @@ from mmengine.config import Config, DictAction
 from mmengine.registry import init_default_scope
 from mmengine.runner import Runner
 
+# torch>=2.6 defaults torch.load to weights_only=True, which rejects the
+# HistoryBuffer objects mmengine writes into its checkpoints (log_scalars
+# meta) -- resume() then dies with UnpicklingError.  Allowlist it for our
+# own work-dir checkpoints (trusted; the only other load is the official
+# COCO-pretrained state dict, which is plain tensors).
+try:
+    import torch.serialization
+    from mmengine.logging import HistoryBuffer
+    torch.serialization.add_safe_globals([HistoryBuffer])
+except Exception:  # pragma: no cover - older torch without safe_globals
+    pass
+
 
 def _git_hash() -> str:
     try:
