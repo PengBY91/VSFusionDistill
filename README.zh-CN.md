@@ -4,7 +4,7 @@
 
 水下机器人出海时，前视声呐和相机同时在线。声呐不受浊度影响；相机画质随浊度和光照连续退化，从清水（D0）到重度退化（D4），直到完全不可用（D∞）。本代码库在整条可靠性轴上训练和评测双流声光检测器，回答两个问题：训练期特权蒸馏（教师看清晰相机、学生看退化相机）是否比推理期特征融合更能保住声呐支路；这种"互增强"的代价是什么——两条支路的误差被拉相关了多少，而下游恰恰把两路检出当独立证据用。
 
-完整研究方案：`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`；当前思路与路线（2026-11-01 复盘，优先读）：`doc/f2-rethink-2026-11-01.md`；实验台账（每个实验：设置/结果/解读/结论）：`doc/experiments.md`；搭建过程日志：`doc/logs/`。
+完整研究方案：`doc/topic-f2-degradation-robust-fusion-detection-distillation-2026-10.md`；当前主线与路线（2026-11-01 复盘 + 2026-11-02 二次评估，优先读 §0 主线、§8 实施纪律、§9 二次评估）：`doc/f2-rethink-2026-11-01.md`；实验台账（每个实验：设置/结果/解读/结论）：`doc/experiments.md`；搭建过程日志：`doc/logs/`。
 
 基础栈：MMDetection 3.3.0（YOLOX 系）+ mmengine 0.10.7 + torch 2.1.2，版本固定于 `env/`（本机另建 torch 2.7.1+cu128 的 `.venv-gpu` 跑 RTX 5090，见 `env/ENVIRONMENT.md`）。第三方仓库一律不改：`third_party/` 以固定 SHA 只读克隆（`tools/clone_third_party.sh`、`third_party/PINNED.md`）。
 
@@ -189,6 +189,8 @@ python tools/collect_results.py work_dirs --out results/results.csv
 - 环境与管线：COCO YOLOX-S 复现门通过（AP 40.30 vs 官方 40.5）；本机 RTX 5090 用 `.venv-gpu`（torch 2.7.1+cu128，见 `env/ENVIRONMENT.md`；torch ≥ 2.6 的 weights_only 默认值由 `aodet/torch_load_compat` 的 scoped 包装处理，断点续训不再依赖环境变量）。
 - 数据：UXO sample 已转换为 `data/paired/uxo/`（2573 对；镜像盆修复后重标定为 blob 1319 / projected 1254），训练 GT 用 blob-only。全量 UXO 下载在途：data_processed.7z（57 GiB）已 md5 校验（11-02 05:32），两个 16 GB 导出包在途（`data/raw/uxo-full/download.log`）。
 - 实验：E01–E10 记录在 `doc/experiments.md`。E10 已按复盘降级为方向性读数；τ 消融 tau1 已出数、tau4 断点续训在跑（事故与恢复见 `doc/logs/2026-11-02-tau4-resume-weights-only.md`），出数只入账不解读。
-- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，代码前置项全部落地（21f1345 + 6e2043a）。数据到位后的管线：解压 → 2 条录音适配验证 → 转换 → 标定（指纹缓存可断点）→ 清点 → 冻结划分 → 数据闸门 0。train 侧 resume 的 scoped weights_only 修复已收口（train/test 共用 `aodet/torch_load_compat`，附 save-then-resume 冒烟测试，见事故记录）。
-- 待决：E11 落在天花板或地板档时论文定位如何调整（见复盘 §3.5、§7）；G1/G2 未满足下投入与 G0 范围的确认（复盘 §7）。
+- 主线（2026-11-02 二次评估写定，复盘页 §0）：相机退化时，相机信息经融合或蒸馏进入声呐支路，收益多少、来自特权还是容量、代价（支路误差相关）多大。先证明有东西可传（融合活性、融合余量、互毒害），再做归因，再测相关性。
+- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，代码前置项全部落地（21f1345 + 6e2043a）。2026-11-02 二次评估给 E11 补了融合活性、融合余量、类别移植上界和 mAP@[.5:.95] 读数；分段训练与 val-ID 交错块是待确认的修订提议。数据到位后的管线：解压 → 2 条录音适配验证 → 转换 → 标定（指纹缓存可断点）→ 清点 → 冻结划分 → 数据闸门 0。train 侧 resume 的 scoped weights_only 修复已收口（train/test 共用 `aodet/torch_load_compat`，附 save-then-resume 冒烟测试，见事故记录）。
+- 二次评估的三条主要风险（复盘 §9.2）：现有交叉注意力融合是惰性的（E10 融合声呐头 d0–D∞ 逐档同值）；按 CMHD 同协议读数，E11 大概率落在天花板档；E12 的跨模态 logit 蒸馏在单目标数据上近似重复监督，须改用折外教师并加标签平滑对照。
+- 待决：E11 算力与是否分段、val-ID 方案（都须在划分落盘前定）；E11 落在天花板或地板档时论文定位，天花板档可能性最大，建议现在就定（复盘 §3.5、§9.2 b）；E11 计入 G0，E12 起超出选题 G0 授权，需用户和指导人确认（复盘 §0、§7）。
 - RSFusionDet 仓库仍为空（每两周核验，`doc/logs/rsfusiondet-watch.log`）。
