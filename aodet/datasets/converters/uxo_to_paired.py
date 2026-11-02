@@ -67,12 +67,21 @@ tail (``val_id_tail_frac`` of frames become split=val_id, preceded by
 ``val_id_gap_frac`` unused frames so the blocks do not touch).  With
 the new arguments at their defaults the converter's output is the
 legacy two-way behaviour plus the new ``moving_target`` column.
+
+2026-11-02 amendment (rethink §9.2 h, adopted before any split was
+written): ``val_id_mode="interleaved"`` replaces the time tail with two
+interleaved time blocks per train recording.  Arc recordings carry their
+worst calibration at the trajectory ends (E03: 10-30 beams), so a tail
+holdout mixes end-of-trajectory extrapolation into the ceiling reading.
+``"tail"`` stays available and is still the function default so legacy
+callers are unchanged; the E11 command passes ``interleaved``.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import random
 import json
 import os
 import re
@@ -150,15 +159,13 @@ def _even_subsample(items: List[str], cap: Optional[int]) -> List[str]:
     return [items[int(round(i * step))] for i in range(cap)]
 
 
-def _train_roles(n: int, tail: float, gap: float) -> List[Optional[str]]:
-    """Per-frame split labels for a train recording's kept frames: the
-    time-tail ``tail`` fraction becomes ``val_id`` (the
-    same-distribution holdout that measures the ceiling), preceded by
-    ``gap`` fraction of unused frames (None) so the blocks do not touch
-    (E11 rule: train 录音时间尾块留出 + 空 5%).  Recordings too short to
-    carve (fewer than 8 kept frames, or a carve that would empty the
-    train block) stay fully train -- visible in the report, not
-    silent."""
+VAL_ID_MODES = ("tail", "interleaved")
+VAL_ID_SEGMENTS = 10      # interleaved: time segments per recording
+VAL_ID_BLOCKS = 2         # interleaved: held-out segments per recording
+_MIN_INTERLEAVED = 20     # fewer kept frames -> recording stays all train
+
+
+def _tail_roles(n: int, tail: float, gap: float) -> List[Optional[str]]:
     if tail <= 0.0 or n < 8:
         return ["train"] * n
     n_tail = max(1, int(round(n * tail)))
@@ -169,6 +176,75 @@ def _train_roles(n: int, tail: float, gap: float) -> List[Optional[str]]:
             + ["val_id"] * n_tail)
 
 
+def _interleaved_segments(rec_key: str, seed: int) -> Tuple[int, int]:
+    """The two held-out segment indices for one recording: drawn from a
+    RNG keyed on (split seed, recording name) so the choice is
+    deterministic, independent of recording order and of
+    PYTHONHASHSEED (``random.Random`` seeds a str via sha512), and at
+    least one segment apart so the blocks never touch."""
+    rng = random.Random(f"val_id:{seed}:{rec_key}")
+    pairs = [(i, j) for i in range(VAL_ID_SEGMENTS)
+             for j in range(i + 2, VAL_ID_SEGMENTS)]
+    return rng.choice(pairs)
+
+
+def _interleaved_roles(n: int, tail: float, gap: float, rec_key: str,
+                       seed: int) -> List[Optional[str]]:
+    if tail <= 0.0 or n < _MIN_INTERLEAVED:
+        return ["train"] * n
+    seg = n / VAL_ID_SEGMENTS
+    b = max(1, int(round(n * tail / VAL_ID_BLOCKS)))
+    if b > int(seg):
+        return ["train"] * n
+    g = int(round(n * gap))
+    roles: List[Optional[str]] = ["train"] * n
+    blocks = []
+    for k in _interleaved_segments(rec_key, seed):
+        start = int(round(k * seg + (seg - b) / 2.0))
+        start = min(max(start, 0), n - b)
+        blocks.append((start, start + b))
+        for t in range(start, start + b):
+            roles[t] = "val_id"
+    for start, end in blocks:       # gaps only eat would-be train frames
+        for t in list(range(max(0, start - g), start)) + \
+                list(range(end, min(n, end + g))):
+            if roles[t] == "train":
+                roles[t] = None
+    if roles.count("train") < n / 2:
+        return ["train"] * n
+    return roles
+
+
+def _train_roles(n: int, tail: float, gap: float, mode: str = "tail",
+                 rec_key: str = "", seed: int = 0) -> List[Optional[str]]:
+    """Per-frame split labels for a train recording's kept frames
+    (time-ordered): ``"train"``, ``"val_id"`` (the same-distribution
+    holdout that measures the ceiling) or ``None`` (unused gap frame, so
+    held-out frames never sit next to training frames).
+
+    ``mode="tail"`` (E11 as first preregistered): the last ``tail``
+    fraction is val_id, preceded by ``gap`` fraction of unused frames.
+    Recordings shorter than 8 kept frames, or whose carve would empty
+    the train block, stay fully train.
+
+    ``mode="interleaved"`` (2026-11-02 amendment): the frames are cut
+    into ``VAL_ID_SEGMENTS`` equal time segments; ``VAL_ID_BLOCKS``
+    segments at least one apart are drawn per recording (keyed on
+    ``rec_key`` and ``seed``); a val_id block of ``round(n*tail/2)``
+    frames sits centred in each, so the total val_id share still equals
+    ``tail``.  Every boundary between a block and training frames gets
+    ``round(n*gap)`` unused frames -- the preregistered gap applied per
+    boundary, not shared.  Recordings with fewer than 20 kept frames, or
+    where the carve would leave less than half the frames for train,
+    stay fully train; both are visible in the report, not silent."""
+    if mode not in VAL_ID_MODES:
+        raise ValueError(f"val_id mode must be one of {VAL_ID_MODES}, "
+                         f"got {mode!r}")
+    if mode == "tail":
+        return _tail_roles(n, tail, gap)
+    return _interleaved_roles(n, tail, gap, rec_key, seed)
+
+
 def convert(src_root: str, out_root: str,
             test_recordings=DEFAULT_TEST_RECORDINGS,
             include_unlabeled: bool = False,
@@ -177,7 +253,9 @@ def convert(src_root: str, out_root: str,
             split_manifest: Optional[Dict[str, Any]] = None,
             max_frames_per_recording: Optional[int] = None,
             val_id_tail_frac: float = 0.0,
-            val_id_gap_frac: float = 0.05) -> Dict[str, Any]:
+            val_id_gap_frac: float = 0.05,
+            val_id_mode: str = "tail",
+            val_id_seed: int = 0) -> Dict[str, Any]:
     """Convert one or more UXO recordings into the paired format.
 
     ``split_manifest`` (E11): a json dict mapping each recording to
@@ -189,6 +267,10 @@ def convert(src_root: str, out_root: str,
 
     Returns a per-recording report dict (frames kept / skipped by
     reason, class counts); print it or assert on it in tests.
+
+    ``val_id_mode`` / ``val_id_seed``: how the val_id holdout is carved
+    from train recordings (see ``_train_roles``); E11 uses
+    ``"interleaved"`` with seed 0 (the frozen split seed).
     """
     if stride < 1:
         raise ValueError("stride must be >= 1")
@@ -196,6 +278,8 @@ def convert(src_root: str, out_root: str,
         raise ValueError("max_frames_per_recording must be >= 1")
     if not 0.0 <= val_id_tail_frac < 1.0 or not 0.0 <= val_id_gap_frac < 1.0:
         raise ValueError("val_id fractions must be in [0, 1)")
+    if val_id_mode not in VAL_ID_MODES:
+        raise ValueError(f"val_id_mode must be one of {VAL_ID_MODES}")
     man = split_manifest or {}
     man = man.get("recordings", man)
     for rec, m in man.items():
@@ -280,8 +364,12 @@ def convert(src_root: str, out_root: str,
 
         kept = _even_subsample(cand, max_frames_per_recording)
         stats["capped_skipped"] = len(cand) - len(kept)
-        roles = (_train_roles(len(kept), val_id_tail_frac, val_id_gap_frac)
+        roles = (_train_roles(len(kept), val_id_tail_frac, val_id_gap_frac,
+                              mode=val_id_mode, rec_key=rec,
+                              seed=val_id_seed)
                  if stats["split"] == "train" else [stats["split"]] * len(kept))
+        if stats["split"] == "train" and val_id_tail_frac > 0:
+            stats["val_id_mode"] = val_id_mode
         stats["val_id_frames"] = sum(1 for r in roles if r == "val_id")
         stats["gap_unused"] = sum(1 for r in roles if r is None)
 
@@ -416,11 +504,17 @@ def main() -> None:
                          "evenly over the trajectory (E11 rule: 150)")
     ap.add_argument("--val-id-tail", type=float, default=0.0,
                     help="fraction of each train recording's kept frames "
-                         "reserved as the same-distribution val_id tail "
-                         "(E11 rule: 0.15)")
+                         "reserved as the same-distribution val_id "
+                         "holdout (E11 rule: 0.15)")
     ap.add_argument("--val-id-gap", type=float, default=0.05,
-                    help="unused gap fraction between the train and "
-                         "val_id blocks (E11 rule: 0.05)")
+                    help="unused gap fraction at each boundary between "
+                         "train and val_id frames (E11 rule: 0.05)")
+    ap.add_argument("--val-id-mode", choices=VAL_ID_MODES, default="tail",
+                    help="'tail' = last frames of the recording; "
+                         "'interleaved' = two non-adjacent time blocks "
+                         "out of 10 segments (E11 rule since 2026-11-02)")
+    ap.add_argument("--val-id-seed", type=int, default=0,
+                    help="seed for the interleaved block draw (E11: 0)")
     ap.add_argument("--contact-sheet", default=None,
                     help="write a jpg grid of sampled annotated frames "
                          "to this path")
@@ -438,7 +532,9 @@ def main() -> None:
                      split_manifest=manifest,
                      max_frames_per_recording=args.max_frames,
                      val_id_tail_frac=args.val_id_tail,
-                     val_id_gap_frac=args.val_id_gap)
+                     val_id_gap_frac=args.val_id_gap,
+                     val_id_mode=args.val_id_mode,
+                     val_id_seed=args.val_id_seed)
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
 
