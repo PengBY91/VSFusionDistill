@@ -219,6 +219,12 @@ def merge_projection_report(inventory: dict, report: dict) -> int:
         e["proj_err_row_px_p50"] = (r.get("proj_err_row_px") or [None])[0]
         e["proj_err_col_beams_p50"] = (r.get("proj_err_col_beams")
                                        or [None])[0]
+        # E11 修订 2 (2026-11-02): same residuals restricted to the
+        # trimmed window (converter --trim-ends); the revised filter
+        # reads these instead of the full-sequence numbers
+        e["n_blob_frames_trim"] = r.get("n_blob_frames_trim")
+        e["proj_err_row_px_p50_trim"] = (r.get("proj_err_row_px_trim")
+                                         or [None])[0]
         # sonar-target distance stats (E11 difficult-subset draft axis):
         # per-frame |gantry head position - calibrated target P|; the
         # head sweeps an arc, so min/median/max describe the run

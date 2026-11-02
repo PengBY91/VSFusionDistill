@@ -145,11 +145,17 @@ def main():
                          "fingerprint (annotations + poses + blob "
                          "detections + fit parameters), mismatches are "
                          "recomputed and the cache is rewritten every run")
+    ap.add_argument("--trim-frac", type=float, default=0.0,
+                    help="also report residual statistics on the middle "
+                         "of each recording's frame order (first/last "
+                         "this fraction dropped, same trim_window the "
+                         "converter applies; E11 修订 2, 2026-11-02: 0.2)")
     args = ap.parse_args()
 
     from aodet.datasets.converters.uxo_projection import (
         CalibResult, anchor_b_rng, calibrate, calib_fingerprint,
         load_observations, project_uxo_sonar)
+    from aodet.datasets.converters.uxo_to_paired import trim_window
     from aodet.datasets.paired_format import PairedData, write_paired
 
     with open(os.path.join(args.paired, "camera.json")) as f:
@@ -204,6 +210,15 @@ def main():
         all_entries.update(entries)
         for o in obs:
             obs_by_sample[o.sample_id] = o
+        # E11 修订 2: trimmed residual statistics on the same window the
+        # converter's --trim-ends carves out (capped frame order, first
+        # and last --trim-frac dropped).  Kept next to the full-sequence
+        # numbers so the two are always comparable in one report.
+        pos = {o.sample_id: i for i, o in enumerate(
+            sorted(obs, key=lambda o: o.frame_idx))}
+        lo, hi = trim_window(len(pos), args.trim_frac)
+        drows_trim = [e["blob_delta"][1] for sid, e in entries.items()
+                      if e["blob_delta"] and lo <= pos[sid] < hi]
         dcols = [e["blob_delta"][0] for e in entries.values()
                  if e["blob_delta"]]
         drows = [e["blob_delta"][1] for e in entries.values()
@@ -230,14 +245,25 @@ def main():
             if dcols else None,
             proj_err_row_px=[round(float(np.median(drows)), 1),
                              round(float(np.percentile(drows, 95)), 1)]
-            if drows else None)
+            if drows else None,
+            trim_window=[lo, hi, len(pos)] if args.trim_frac > 0 else None,
+            n_blob_frames_trim=len(drows_trim) if args.trim_frac > 0
+            else None,
+            proj_err_row_px_trim=[round(float(np.median(drows_trim)), 1),
+                                  round(float(np.percentile(drows_trim, 95)),
+                                        1)]
+            if args.trim_frac > 0 and drows_trim else None)
         r = report[rec]
-        print(f"{rec}: yaw={r['yaw_sign']:+d} span={r['yaw_span_deg']}deg "
-              f"cam={r['rms_cam_deg']}deg az={r['rms_az_deg']}deg "
-              f"rng={r['rms_rng_m']}m b={r['b_rng_m']}m P={r['P']} "
-              f"blob/proj/drop={src['blob']}/{src['projected']}/"
-              f"{r['dropped_frames']} "
-              f"dcol(p50,p95)={r['proj_err_col_beams']}")
+        line = (f"{rec}: yaw={r['yaw_sign']:+d} span={r['yaw_span_deg']}deg "
+                f"cam={r['rms_cam_deg']}deg az={r['rms_az_deg']}deg "
+                f"rng={r['rms_rng_m']}m b={r['b_rng_m']}m P={r['P']} "
+                f"blob/proj/drop={src['blob']}/{src['projected']}/"
+                f"{r['dropped_frames']} "
+                f"dcol(p50,p95)={r['proj_err_col_beams']}")
+        if args.trim_frac > 0:
+            line += (f" drow_trim(p50)={r['proj_err_row_px_trim']}"
+                     f"[{r['n_blob_frames_trim']}fr]")
+        print(line)
 
     out_json = os.path.join(args.paired, "projection_report.json")
     with open(out_json, "w", encoding="utf-8") as f:

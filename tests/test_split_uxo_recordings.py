@@ -170,3 +170,35 @@ def test_cli_writes_manifest_with_sha(tmp_path):
     assert manifest["seed"] == 0
     assert sum(manifest["counts"].values()) == 32
     assert "sha256" in r.stdout
+
+
+def test_trimmed_stats_filter_uses_new_fields():
+    """E11 修订 2026-11-02: with --trimmed-stats the gate reads
+    n_blob_frames_trim / proj_err_row_px_p50_trim against the raised
+    row gate; missing trim fields abort as missing calibration
+    numbers; defaults keep the frozen full-sequence 10 px behaviour."""
+    tool = _tool()
+    inv = _inventory(n_per_cell=6)
+    recs = inv["recordings"]
+    # 100001 was replaced by the dev recording; 100002+ are real names
+    recs["2024-01-02_100002"]["proj_err_row_px_p50"] = 25.0   # full: fail
+    for e in recs.values():
+        e["n_blob_frames_trim"] = 90
+        e["proj_err_row_px_p50_trim"] = 8.0
+    # full-sequence gate (default) excludes it
+    m, _ = tool.assign(inv)
+    assert m["2024-01-02_100002"]["split"] == "excluded"
+    # trimmed gate at 20 px keeps it
+    m2, infeasible = tool.assign(inv, row_gate_px=20.0, trimmed=True)
+    assert infeasible == []
+    assert m2["2024-01-02_100002"]["split"] != "excluded"
+    # a trimmed residual above the gate is excluded with the new gate
+    recs["2024-01-03_100003"]["proj_err_row_px_p50_trim"] = 25.0
+    m3, _ = tool.assign(inv, row_gate_px=20.0, trimmed=True)
+    assert m3["2024-01-03_100003"]["split"] == "excluded"
+    assert "20.0" in m3["2024-01-03_100003"]["exclude_reason"]
+    # missing trim fields abort the recording under --trimmed-stats
+    recs["2024-01-04_100004"].pop("proj_err_row_px_p50_trim")
+    m4, _ = tool.assign(inv, row_gate_px=20.0, trimmed=True)
+    assert "missing calibration numbers" in \
+        m4["2024-01-04_100004"]["exclude_reason"]

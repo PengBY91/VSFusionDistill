@@ -544,3 +544,106 @@ def test_e11_interleaved_invocation_roundtrip(tmp_path):
     f1 = (out / "frame_meta.csv").read_text()
     convert(str(src), str(out), **kw)
     assert (out / "frame_meta.csv").read_text() == f1
+
+
+def test_trim_window_bounds():
+    """E11 修订 2 (2026-11-02): the frozen window is positions i with
+    0.2 <= i/(n-1) <= 0.8 on the capped frame order."""
+    from aodet.datasets.converters.uxo_to_paired import trim_window
+    assert trim_window(150, 0.2) == (30, 120)   # 30/149 .. 119/149
+    assert trim_window(10, 0.2) == (2, 8)       # 2/9 .. 7/9
+    assert trim_window(91, 0.2) == (18, 73)     # 18/90=0.2 exactly kept
+    assert trim_window(1, 0.2) == (0, 1)
+    assert trim_window(5, 0.0) == (0, 5)
+    with pytest.raises(ValueError):
+        trim_window(10, 0.5)
+    with pytest.raises(ValueError):
+        trim_window(10, -0.1)
+
+
+def _make_long_recording(src, n=30):
+    """One fully annotated recording with n contiguous frames."""
+    label = {"class": "mortar_shell", "x_min": 10, "y_min": 20,
+             "x_max": 110, "y_max": 60}
+    rec = "2023-01-01_100000"
+    for sub in ("gopro", "aris_raw", "labels"):
+        (src / rec / sub).mkdir(parents=True)
+    (src / rec / "aris_file_meta.yaml").write_text(
+        "NumRawBeams: 64\nSamplesPerChannel: 100\n")
+    for i in range(n):
+        _write_frame(src / rec, f"{i:04d}", label=label)
+    import csv
+    with open(src / rec / "gantry.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["aris_frame_idx", "x", "y", "z"])
+        for i in range(n):
+            w.writerow([i, 0.01 * i, -0.2, -0.25])
+    cols = ("FrameIndex", "FrameTime", "sonarTimeStamp", "WindowStart",
+            "WindowLength", "SamplePeriod", "ReceiverGain", "Intensity",
+            "Focus", "SoundSpeed", "TargetRange", "TargetBearing")
+    with open(src / rec / "aris_frame_meta.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        for i in range(n):
+            w.writerow([i, 0, 0, 0.69, 2.32, 4.0, 10, 28, 528, 1491.3,
+                        3.2, -0.4])
+    return rec
+
+
+def test_convert_trims_endpoint_frames(tmp_path):
+    """trim_ends_frac drops the first/last fraction of the kept order
+    before val_id carving; the dropped count is visible in the report
+    and no endpoint frame reaches the paired output."""
+    src = tmp_path / "src"
+    rec = _make_long_recording(src, n=30)
+    out = tmp_path / "paired"
+    report = convert(str(src), str(out), test_recordings=(),
+                     trim_ends_frac=0.2)
+    a = report["recordings"][rec]
+    # n=30: k = ceil(0.2*29) = 6 -> frames [6, 24) kept (18)
+    assert a["trim_ends_dropped"] == 12
+    assert a["kept"] == 18
+    data = read_paired(str(out))
+    idxs = sorted(int(m["frame_idx"]) for m in data.frame_meta)
+    assert idxs == list(range(6, 24))
+    # trim 0 keeps everything (legacy behaviour, field absent)
+    report0 = convert(str(src), str(tmp_path / "paired0"),
+                      test_recordings=())
+    assert "trim_ends_dropped" not in report0["recordings"][rec]
+    assert report0["recordings"][rec]["kept"] == 30
+
+
+def test_convert_trim_applies_after_cap(tmp_path):
+    """Frozen order: cap first, then trim -- the trimmed statistics in
+    the projection report are computed on exactly this capped order."""
+    src = tmp_path / "src"
+    rec = _make_long_recording(src, n=30)
+    out = tmp_path / "paired"
+    report = convert(str(src), str(out), test_recordings=(),
+                     max_frames_per_recording=10, trim_ends_frac=0.2)
+    a = report["recordings"][rec]
+    assert a["capped_skipped"] == 20
+    # cap 10 -> trim_window(10, .2) = (2, 8): 6 frames survive
+    assert a["trim_ends_dropped"] == 4
+    assert a["kept"] == 6
+
+
+def test_manifest_excluded_split_skips_recording(tmp_path):
+    """The split tool's manifest marks filter-rejected recordings with
+    split="excluded" (not an ``excluded`` bool); the converter must
+    skip them with the reason visible instead of aborting the run."""
+    src = _make_fake_uxo(tmp_path / "src")
+    out = tmp_path / "paired"
+    manifest = {"recordings": {
+        REC_A: {"split": "train", "moving_target": False},
+        REC_B: {"split": "excluded", "moving_target": False,
+                "exclude_reason": "row residual p50 96.9 px > 20.0"},
+    }}
+    report = convert(str(src), str(out), split_manifest=manifest)
+    a = report["recordings"][REC_A]
+    assert (a["split"], a["kept"]) == ("train", 2)
+    b = report["recordings"][REC_B]
+    assert b["split"] == "excluded"
+    assert "96.9" in b["exclude_reason"]
+    assert b["kept"] == 0
+    assert report["total_kept"] == 2

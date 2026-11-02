@@ -75,12 +75,22 @@ worst calibration at the trajectory ends (E03: 10-30 beams), so a tail
 holdout mixes end-of-trajectory extrapolation into the ceiling reading.
 ``"tail"`` stays available and is still the function default so legacy
 callers are unchanged; the E11 command passes ``interleaved``.
+
+2026-11-02 amendment 2 (E11 data gate, user-adopted after the option-C
+diagnosis, doc/logs/2026-11-02-e11-row-residual-diagnosis.md):
+``trim_ends_frac`` drops the first and last ``trim_ends_frac`` of each
+recording's kept frames (after the cap, before val_id carving), so the
+endpoint frames whose calibration residuals are worst never enter
+training GT or the filter statistics.  The same window, computed by
+:func:`trim_window`, drives the trimmed residual statistics in the
+projection report -- one rule, one code path, both sides identical.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import math
 import random
 import json
 import os
@@ -157,6 +167,22 @@ def _even_subsample(items: List[str], cap: Optional[int]) -> List[str]:
         return items
     step = (len(items) - 1) / (cap - 1)
     return [items[int(round(i * step))] for i in range(cap)]
+
+
+def trim_window(n: int, frac: float) -> Tuple[int, int]:
+    """``[lo, hi)`` frame-index window keeping the middle of an
+    ``n``-frame sequence: positions ``i`` with ``frac <= i/(n-1) <=
+    1-frac`` (E11 修订 2, frozen 2026-11-02 with frac=0.2 on the
+    capped frame order).  ``frac=0`` or ``n<=1`` keeps everything.
+    Shared by the converter (which frames enter the paired dataset)
+    and the projection report (which frames the trimmed filter
+    statistics are computed on), so the two can never drift apart."""
+    if frac < 0.0 or frac >= 0.5:
+        raise ValueError(f"trim fraction must be in [0, 0.5), got {frac}")
+    if n <= 1 or frac == 0.0:
+        return 0, n
+    k = math.ceil(frac * (n - 1))
+    return k, n - k
 
 
 VAL_ID_MODES = ("tail", "interleaved")
@@ -252,6 +278,7 @@ def convert(src_root: str, out_root: str,
             contact_sheet: Optional[str] = None,
             split_manifest: Optional[Dict[str, Any]] = None,
             max_frames_per_recording: Optional[int] = None,
+            trim_ends_frac: float = 0.0,
             val_id_tail_frac: float = 0.0,
             val_id_gap_frac: float = 0.05,
             val_id_mode: str = "tail",
@@ -276,6 +303,7 @@ def convert(src_root: str, out_root: str,
         raise ValueError("stride must be >= 1")
     if max_frames_per_recording is not None and max_frames_per_recording < 1:
         raise ValueError("max_frames_per_recording must be >= 1")
+    trim_window(2, trim_ends_frac)   # validates the fraction early
     if not 0.0 <= val_id_tail_frac < 1.0 or not 0.0 <= val_id_gap_frac < 1.0:
         raise ValueError("val_id fractions must be in [0, 1)")
     if val_id_mode not in VAL_ID_MODES:
@@ -283,7 +311,10 @@ def convert(src_root: str, out_root: str,
     man = split_manifest or {}
     man = man.get("recordings", man)
     for rec, m in man.items():
-        if m.get("split") not in (None, "train", "val", "test"):
+        # "excluded" = the calibration-quality filter rejected it
+        # (split tool manifest); such recordings are skipped, not built
+        if m.get("split") not in (None, "train", "val", "test",
+                                  "excluded"):
             raise ValueError(f"{rec}: bad manifest split {m.get('split')!r}")
     cat_id = {name: i + 1 for i, name in enumerate(CATEGORIES)}
     test_set = set(test_recordings)
@@ -315,7 +346,7 @@ def convert(src_root: str, out_root: str,
                  "no_gantry": 0, "stride_skipped": 0, "classes": {},
                  "category_dir": group or ""}
         m = man.get(rec, {})
-        if m.get("excluded"):
+        if m.get("excluded") or m.get("split") == "excluded":
             stats.update(split="excluded",
                          exclude_reason=m.get("exclude_reason", ""),
                          moving_target="true" if m.get("moving_target")
@@ -364,6 +395,14 @@ def convert(src_root: str, out_root: str,
 
         kept = _even_subsample(cand, max_frames_per_recording)
         stats["capped_skipped"] = len(cand) - len(kept)
+        if trim_ends_frac > 0:
+            # E11 修订 2: trim AFTER the cap (the capped order is the
+            # order the filter statistics were frozen on) and BEFORE the
+            # val_id carving, so held-out blocks and training frames see
+            # the same trimmed trajectory.
+            lo, hi = trim_window(len(kept), trim_ends_frac)
+            stats["trim_ends_dropped"] = len(kept) - (hi - lo)
+            kept = kept[lo:hi]
         roles = (_train_roles(len(kept), val_id_tail_frac, val_id_gap_frac,
                               mode=val_id_mode, rec_key=rec,
                               seed=val_id_seed)
@@ -502,6 +541,10 @@ def main() -> None:
     ap.add_argument("--max-frames", type=int, default=None,
                     help="per-recording cap on kept frames, sampled "
                          "evenly over the trajectory (E11 rule: 150)")
+    ap.add_argument("--trim-ends", type=float, default=0.0,
+                    help="drop the first and last this-fraction of each "
+                         "recording's capped frame order before val_id "
+                         "carving (E11 修订 2, 2026-11-02: 0.2)")
     ap.add_argument("--val-id-tail", type=float, default=0.0,
                     help="fraction of each train recording's kept frames "
                          "reserved as the same-distribution val_id "
@@ -531,6 +574,7 @@ def main() -> None:
                      contact_sheet=args.contact_sheet,
                      split_manifest=manifest,
                      max_frames_per_recording=args.max_frames,
+                     trim_ends_frac=args.trim_ends,
                      val_id_tail_frac=args.val_id_tail,
                      val_id_gap_frac=args.val_id_gap,
                      val_id_mode=args.val_id_mode,

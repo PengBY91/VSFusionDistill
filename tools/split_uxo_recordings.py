@@ -10,7 +10,15 @@ E11 划分规则 (doc/experiments.md E11, 出数前冻结):
    blob frames < 30, or anchored row-residual p50 > 10 px, or bearing
    residual rms > 3 deg.  Calibration numbers must be present for
    every recording (the filter is defined on them); recordings missing
-   them abort the run -- calibrate first.
+   them abort the run -- calibrate first.  2026-11-02 预数据修订
+   (user-adopted after the option-C diagnosis,
+   doc/logs/2026-11-02-e11-row-residual-diagnosis.md): with
+   --row-gate-px 20 --trimmed-stats the row gate reads the
+   trimmed-window statistics (converter --trim-ends 0.2 drops each
+   recording's first/last 20% of capped frames; the projection report
+   computes the same window) and the gate rises to 20 px; blob-frames
+   >= 30 (on the trimmed window) and az rms <= 3 deg are unchanged.
+   Defaults keep the frozen 10 px full-sequence behaviour.
 2. Recording-level split, stratified by category x geometry
    (arc/line/aim), ratio ~6:2:2 (train/val/test); per category at
    least 3 recordings in val and in test, at least 6 in train.
@@ -55,27 +63,34 @@ VAL_FRAC = 0.2
 TEST_FRAC = 0.2
 
 
-def calibration_exclusion(e: dict):
+def calibration_exclusion(e: dict, row_gate_px: float = MAX_ROW_RESID_PX,
+                          trimmed: bool = False):
     """None when the recording passes the 标定质量过滤, else the reason
-    string (frozen thresholds)."""
-    blob = e.get("n_blob_frames")
-    row = e.get("proj_err_row_px_p50")
+    string.  Default thresholds are the frozen originals (10 px on the
+    full sequence); the 2026-11-02 修订 passes row_gate_px=20.0 with
+    trimmed=True to gate on the trimmed-window statistics instead."""
+    row_key = "proj_err_row_px_p50_trim" if trimmed \
+        else "proj_err_row_px_p50"
+    blob_key = "n_blob_frames_trim" if trimmed else "n_blob_frames"
+    blob = e.get(blob_key)
+    row = e.get(row_key)
     az = e.get("rms_az_deg")
-    missing = [k for k, v in (("n_blob_frames", blob),
-                              ("proj_err_row_px_p50", row),
+    missing = [k for k, v in ((blob_key, blob), (row_key, row),
                               ("rms_az_deg", az)) if v is None]
     if missing:
         return f"missing calibration numbers: {', '.join(missing)}"
     if blob < MIN_BLOB_FRAMES:
-        return f"blob frames {blob} < {MIN_BLOB_FRAMES}"
-    if row > MAX_ROW_RESID_PX:
-        return f"row residual p50 {row} px > {MAX_ROW_RESID_PX}"
+        return f"blob frames {blob} < {MIN_BLOB_FRAMES} (trimmed window)"
+    if row > row_gate_px:
+        return (f"row residual p50 {row} px > {row_gate_px}"
+                f"{' (trimmed)' if trimmed else ''}")
     if az > MAX_AZ_RMS_DEG:
         return f"bearing residual rms {az} deg > {MAX_AZ_RMS_DEG}"
     return None
 
 
-def assign(inventory: dict, seed: int = 0):
+def assign(inventory: dict, seed: int = 0,
+           row_gate_px: float = MAX_ROW_RESID_PX, trimmed: bool = False):
     """-> (manifest recordings dict, infeasibility list).  Within a
     category, candidates are drawn round-robin over geometry groups so
     every split samples all geometries; test is filled first (it has
@@ -86,7 +101,7 @@ def assign(inventory: dict, seed: int = 0):
 
     by_cat = {}
     for name, e in sorted(recs.items()):
-        reason = calibration_exclusion(e)
+        reason = calibration_exclusion(e, row_gate_px, trimmed)
         manifest[name] = {
             "split": "excluded" if reason else None,
             "exclude_reason": reason or "",
@@ -95,6 +110,8 @@ def assign(inventory: dict, seed: int = 0):
             "moving_target": bool(e.get("moving_target")),
             "n_blob_frames": e.get("n_blob_frames"),
             "proj_err_row_px_p50": e.get("proj_err_row_px_p50"),
+            "n_blob_frames_trim": e.get("n_blob_frames_trim"),
+            "proj_err_row_px_p50_trim": e.get("proj_err_row_px_p50_trim"),
             "rms_az_deg": e.get("rms_az_deg"),
             "dev_recording": name in DEV_RECORDINGS,
         }
@@ -165,11 +182,20 @@ def main():
     ap.add_argument("--out", required=True, help="split manifest json")
     ap.add_argument("--seed", type=int, default=0,
                     help="split seed (frozen rule: 0)")
+    ap.add_argument("--row-gate-px", type=float, default=MAX_ROW_RESID_PX,
+                    help="row-residual p50 gate in px (frozen original: "
+                         "10; E11 修订 2026-11-02: 20 with --trimmed-stats)")
+    ap.add_argument("--trimmed-stats", action="store_true",
+                    help="gate on the trimmed-window statistics "
+                         "(n_blob_frames_trim / proj_err_row_px_p50_trim, "
+                         "converter --trim-ends 0.2; E11 修订 2026-11-02)")
     args = ap.parse_args()
 
     with open(args.inventory, encoding="utf-8") as f:
         inventory = json.load(f)
-    manifest_recs, infeasible = assign(inventory, seed=args.seed)
+    manifest_recs, infeasible = assign(inventory, seed=args.seed,
+                                       row_gate_px=args.row_gate_px,
+                                       trimmed=args.trimmed_stats)
     if infeasible:
         print("INFEASIBLE under the frozen constraints:", file=sys.stderr)
         for line in infeasible:
@@ -183,6 +209,10 @@ def main():
     for m in manifest_recs.values():
         counts[m["split"]] = counts.get(m["split"], 0) + 1
     manifest = {"seed": args.seed, "counts": counts,
+                "filter": {"row_gate_px": args.row_gate_px,
+                           "stats": "trim" if args.trimmed_stats else "full",
+                           "min_blob_frames": MIN_BLOB_FRAMES,
+                           "max_az_rms_deg": MAX_AZ_RMS_DEG},
                 "recordings": manifest_recs}
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)

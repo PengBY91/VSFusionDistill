@@ -250,3 +250,25 @@ def test_cli_class_grouped_layout(tmp_path):
     # strata stay keyed on the label-derived category
     assert set(inv["stratification"]) == {"mortar_shell|arc",
                                           "mortar_shell|line"}
+
+
+def test_merge_report_carries_trim_fields(tmp_path):
+    """E11 修订 2 (2026-11-02): the trimmed-window residuals land in
+    inventory so the revised split filter can gate on them; reports
+    without them (legacy) leave the keys out entirely."""
+    tool = _tool()
+    src = _make_src(tmp_path)
+    e = tool.inventory_recording(str(src / REC_ARC), REC_ARC)
+    inv = {"src": str(src), "recordings": {REC_ARC: e}}
+    tool.merge_projection_report(inv, {REC_ARC: {
+        "yaw_sign": 1,
+        "proj_err_row_px_trim": [7.2, 19.0], "n_blob_frames_trim": 88}})
+    d = inv["recordings"][REC_ARC]
+    assert d["proj_err_row_px_p50_trim"] == 7.2
+    assert d["n_blob_frames_trim"] == 88
+    e2 = tool.inventory_recording(str(src / REC_LINE), REC_LINE)
+    inv2 = {"src": str(src), "recordings": {REC_LINE: e2}}
+    tool.merge_projection_report(inv2, {REC_LINE: {"yaw_sign": 0}})
+    # legacy report: the key exists but is None, which the revised
+    # filter reports as missing calibration numbers (loud, not silent)
+    assert inv2["recordings"][REC_LINE]["proj_err_row_px_p50_trim"] is None
