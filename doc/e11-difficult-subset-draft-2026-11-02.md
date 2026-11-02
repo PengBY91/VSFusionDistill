@@ -24,14 +24,16 @@
 
 ## 3 子集定义
 
-| 子集 | 轴 | 判定 | 阈值（待冻结） |
+| 子集 | 轴 | 判定 | 阈值（已冻结，2026-11-02 深夜，n=24 过滤后录音，最近秩分位） |
 |---|---|---|---|
-| DS-far | 距离 | `dist_median_m` ≥ 全量 p67 | ≥ ____ m |
-| DS-faint | 回波对比度 | `blob_contrast_median` ≤ 全量 p33 | ≤ ____ |
+| DS-far | 距离 | `dist_median_m` ≥ 全量 p67 | ≥ 1.801 m |
+| DS-faint | 回波对比度 | `blob_contrast_median` ≤ 全量 p33 | ≤ 4.018 |
 | DS-aim | 几何 | `geometry == aim` | 无参数 |
-| DS-pose | 目标姿态 | `gt_aspect_median` ≥ 全量 p67 | ≥ ____ |
+| DS-pose | 目标姿态 | `gt_aspect_median` ≥ 全量 p67 | ≥ 1.619 |
 | DS-hard | 复合 | DS-far ∩ DS-faint | 继承上两行 |
 | （引用） | 目标运动 | `moving_target`，已有单列维度，不重复造表 | 无参数 |
+
+2026-11-02 深夜冻结注记：阈值在 split 落盘前于通过冻结标定过滤的 24 条录音上计算（此刻划分已判不可行、无 manifest，更无 val 归属信息）；DS-faint 回退未触发（blob_contrast p10=3.70、p90=43.75、比值 11.8，远超退化线 1.2）。若标定过滤门经预数据修订，本表在新过滤集上重冻结并在本节注明原因与日期，旧值保留不删。
 
 说明：
 
