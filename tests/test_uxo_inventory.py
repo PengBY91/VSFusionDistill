@@ -173,3 +173,53 @@ def test_cli_writes_inventory_with_strata(tmp_path):
     assert set(inv["stratification"]) == {"mortar_shell|arc",
                                           "mortar_shell|line"}
     assert inv["stratification"]["mortar_shell|arc"] == [REC_ARC]
+
+
+def test_category_dir_audit_branches():
+    tool = _tool()
+    e = {"category": "mortar_shell"}
+    tool.apply_category_dir_audit(e, None)                # flat layout
+    assert (e["category_dir"], e["category_dir_matches_labels"]) == (None, None)
+    tool.apply_category_dir_audit(e, "15cm_mortar")       # verified, match
+    assert e["category_dir_matches_labels"] is True
+    tool.apply_category_dir_audit(e, "100lbs_bomb")       # verified, mismatch
+    assert e["category_dir_matches_labels"] is False
+    tool.apply_category_dir_audit(e, "test_cylinder")     # unmapped: no claim
+    assert e["category_dir_matches_labels"] is None
+    # sonar-only recording (no labels -> no category) under a mapped
+    # dir: indeterminate, NOT a mismatch (found in the 2026-11-02
+    # real-data smoke: 2023-09-21_122115 under 20lbs_incendiary)
+    unlabeled = {"category": None}
+    tool.apply_category_dir_audit(unlabeled, "20lbs_incendiary")
+    assert unlabeled["category_dir_matches_labels"] is None
+
+
+def test_cli_class_grouped_layout(tmp_path):
+    """The main package (data_export_recordings.7z, verified
+    2026-11-02) nests recordings under category dirs; the CLI must
+    inventory that layout and carry the dir as an audit field."""
+    import shutil
+    import subprocess
+    src = _make_src(tmp_path)
+    grouped = tmp_path / "grouped"
+    cls = grouped / "15cm_mortar"
+    cls.mkdir(parents=True)
+    for rec in (REC_ARC, REC_LINE):
+        shutil.move(str(src / rec), str(cls / rec))
+    out = tmp_path / "inventory.json"
+    r = subprocess.run(
+        [sys.executable,
+         os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                      "tools", "uxo_inventory.py"),
+         "--src", str(grouped), "--out", str(out)],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    inv = json.loads(out.read_text())
+    assert set(inv["recordings"]) == {REC_ARC, REC_LINE}
+    for e in inv["recordings"].values():
+        assert e["category"] == "mortar_shell"      # labels stay authoritative
+        assert e["category_dir"] == "15cm_mortar"
+        assert e["category_dir_matches_labels"] is True
+    # strata stay keyed on the label-derived category
+    assert set(inv["stratification"]) == {"mortar_shell|arc",
+                                          "mortar_shell|line"}

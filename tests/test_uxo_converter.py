@@ -100,12 +100,40 @@ def test_convert_counts_and_skips(tmp_path):
     assert a["label_without_gopro"] == 1        # 0103
     assert a["annotated_without_aris"] == 1     # 0104
     assert a["classes"] == {"mortar_shell": 2}
+    assert a["category_dir"] == ""              # flat sample layout
     b = report["recordings"][REC_B]
     assert (b["split"], b["kept"]) == ("test", 2)
     assert b["no_gantry"] == 1                  # 0202
     assert report["total_kept"] == 4
     assert report["total_annotations"] == 4
     assert "evil..dir" not in report["recordings"]
+
+
+def test_class_grouped_layout(tmp_path):
+    """data_export_recordings.7z nests recordings one level deeper:
+    <src>/<category_dir>/<recording>/ (94 recordings under 5 category
+    dirs, verified against the archive listing 2026-11-02).  Discovery
+    must walk the extra level, tag the report, and keep full
+    provenance in source_path_* -- while per-recording accounting
+    stays identical to the flat layout."""
+    src = _make_fake_uxo(tmp_path / "grouped" / "15cm_mortar")
+    out = tmp_path / "paired"
+    report = convert(str(src.parent), str(out), test_recordings=(REC_B,))
+    a = report["recordings"][REC_A]
+    assert (a["split"], a["kept"]) == ("train", 2)
+    assert a["classes"] == {"mortar_shell": 2}
+    assert a["category_dir"] == "15cm_mortar"
+    b = report["recordings"][REC_B]
+    assert (b["split"], b["kept"]) == ("test", 2)
+    assert b["category_dir"] == "15cm_mortar"
+    assert report["total_kept"] == 4
+    assert report["total_annotations"] == 4
+    assert "evil..dir" not in report["recordings"]
+    data = read_paired(str(out))
+    by_sid = {m["sample_id"]: m for m in data.frame_meta}
+    m = by_sid[f"{REC_A}_0100"]
+    assert m["source_path_camera"] == f"15cm_mortar/{REC_A}/gopro/0100.jpg"
+    assert m["source_path_sonar"] == f"15cm_mortar/{REC_A}/aris_raw/0100.pgm"
 
 
 def test_convert_x3_boxes_and_categories(tmp_path):

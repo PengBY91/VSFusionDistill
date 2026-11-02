@@ -2,7 +2,12 @@
 
 Source layout (one dir per recording, frame index shared by all
 modalities -- verified on sample.7z 2026-10-30, see
-doc/logs/2026-10-30-f2-codebase-w1-w3.md)::
+doc/logs/2026-10-30-f2-codebase-w1-w3.md).  Both upstream layouts are
+accepted: the flat sample layout ``<src>/<recording>/`` and the
+class-grouped main-package layout ``<src>/<category_dir>/<recording>/``
+(data_export_recordings.7z, verified 2026-11-02 -- the category dir
+lands in the report as ``category_dir`` and prefixes
+``source_path_*``; the label ``class`` field stays authoritative)::
 
     <src_root>/<recording>/
       labels/<idx>.json    ONE box per annotated gopro frame, coordinates
@@ -75,6 +80,7 @@ import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..paired_format import PairedData, read_paired, write_paired
+from .uxo_layout import discover_recordings
 
 __all__ = ["convert", "DEFAULT_TEST_RECORDINGS"]
 
@@ -82,8 +88,6 @@ __all__ = ["convert", "DEFAULT_TEST_RECORDINGS"]
 # arc 100927 + line 124735 in test -- each test recording novel in one
 # dimension only; superseded the E02 default (105856+124735)
 DEFAULT_TEST_RECORDINGS = ("2023-09-21_100927", "2023-09-21_124735")
-
-_REC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}$")
 _FRAME_RE = re.compile(r"^\d{4}$")
 # per-frame aris_frame_meta.csv columns carried into frame_meta.csv (keeps
 # the projection tool off the raw csv); SamplePeriod completes the
@@ -213,20 +217,19 @@ def convert(src_root: str, out_root: str,
     os.makedirs(os.path.join(out_root, "images", "camera"), exist_ok=True)
     os.makedirs(os.path.join(out_root, "images", "sonar"), exist_ok=True)
 
-    recs = sorted(d for d in os.listdir(src_root)
-                  if _REC_RE.match(d)
-                  and os.path.isdir(os.path.join(src_root, d)))
+    recs = discover_recordings(src_root)
     if not recs:
         raise ValueError(
             f"no recording dirs (YYYY-MM-DD_HHMMSS) under {src_root}")
 
     next_id = 1
     next_ann_id = 1
-    for rec in recs:
-        rd = os.path.join(src_root, rec)
+    for rec, rd, group in recs:
+        prefix = f"{group}/" if group else ""
         stats = {"split": "", "kept": 0, "unlabeled_skipped": 0,
                  "label_without_gopro": 0, "annotated_without_aris": 0,
-                 "no_gantry": 0, "stride_skipped": 0, "classes": {}}
+                 "no_gantry": 0, "stride_skipped": 0, "classes": {},
+                 "category_dir": group or ""}
         m = man.get(rec, {})
         if m.get("excluded"):
             stats.update(split="excluded",
@@ -309,8 +312,8 @@ def convert(src_root: str, out_root: str,
                 "recording": rec,
                 "frame_idx": int(idx),
                 "moving_target": moving_flag,
-                "source_path_camera": f"{rec}/gopro/{idx}.jpg",
-                "source_path_sonar": f"{rec}/aris_raw/{idx}.pgm",
+                "source_path_camera": f"{prefix}{rec}/gopro/{idx}.jpg",
+                "source_path_sonar": f"{prefix}{rec}/aris_raw/{idx}.pgm",
                 "gantry_x": gantry[int(idx)].get("x", ""),
                 "gantry_y": gantry[int(idx)].get("y", ""),
                 "gantry_z": gantry[int(idx)].get("z", ""),

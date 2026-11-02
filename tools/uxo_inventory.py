@@ -33,8 +33,9 @@ import numpy as np  # noqa: E402
 
 from aodet.datasets.converters.uxo_projection import (  # noqa: E402
     _YAW_AIM, detect_blobs, fit_circle)
+from aodet.datasets.converters.uxo_layout import (  # noqa: E402
+    CATEGORY_DIR_TO_LABEL_CLASS, discover_recordings)
 
-_REC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{6}$")
 _FRAME_RE = re.compile(r"^\d{4}$")
 _MONO_FRAC = 0.9    # sign consistency for "monotonic drift"
 _DRIFT_FRAC = 0.10  # drift threshold: 10% of the image extent
@@ -67,6 +68,22 @@ def _read_csv_rows(path):
             except (KeyError, ValueError):
                 continue
     return out
+
+
+def apply_category_dir_audit(entry: dict, group) -> None:
+    """Cross-check upstream's category dir (data_export_recordings.7z
+    groups recordings as <src>/<category_dir>/<rec>/) against the
+    label-derived category, which stays authoritative -- the dir and
+    label namespaces differ (15cm_mortar holds mortar_shell frames).
+    ``category_dir_matches_labels`` is None for the flat layout, for
+    dirs not in the verified map (no claim made, e.g. test_cylinder),
+    and for recordings without labels (no category to check -- a
+    sonar-only recording under 20lbs_incendiary is not a mismatch)."""
+    entry["category_dir"] = group
+    expected = CATEGORY_DIR_TO_LABEL_CLASS.get(group) if group else None
+    entry["category_dir_matches_labels"] = (
+        None if expected is None or entry.get("category") is None
+        else entry["category"] == expected)
 
 
 def inventory_recording(rec_dir: str, name: str) -> dict:
@@ -202,19 +219,20 @@ def main():
                          "residuals + the fitted head convention")
     args = ap.parse_args()
 
-    recs = sorted(d for d in os.listdir(args.src)
-                  if _REC_RE.match(d)
-                  and os.path.isdir(os.path.join(args.src, d)))
+    recs = discover_recordings(args.src)
     if not recs:
         sys.exit(f"no recording dirs (YYYY-MM-DD_HHMMSS) under {args.src}")
     inventory = {"src": os.path.abspath(args.src), "recordings": {}}
-    for rec in recs:
-        inventory["recordings"][rec] = inventory_recording(
-            os.path.join(args.src, rec), rec)
+    for rec, rec_dir, group in recs:
+        inventory["recordings"][rec] = inventory_recording(rec_dir, rec)
         e = inventory["recordings"][rec]
-        print(f"{rec}: cat={e['category']} path={e['path']} "
-              f"ann={e['n_annotated']} blob={e['n_blob_frames']} "
-              f"moving={e['moving_target']}")
+        apply_category_dir_audit(e, group)
+        flag = ("" if e["category_dir_matches_labels"] in (None, True)
+                else "  LABEL/DIR-MISMATCH")
+        print(f"{rec}: cat={e['category']} dir={group or '-'} "
+              f"path={e['path']} ann={e['n_annotated']} "
+              f"blob={e['n_blob_frames']} moving={e['moving_target']}"
+              f"{flag}")
 
     if args.projection_report:
         with open(args.projection_report, encoding="utf-8") as f:
