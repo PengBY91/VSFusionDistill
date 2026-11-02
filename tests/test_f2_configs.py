@@ -39,9 +39,9 @@ F2_CONFIGS = [
     # the teacher checkpoint to exist)
     "configs/f2/e10_t_b2_yoloxl_teacher.py",
     "configs/f2/e10_b3_degaug_yoloxs.py",
-    # E11 (the three distillation students are content-checked separately,
+    # E13 (the three distillation students are content-checked separately,
     # same reason as M3)
-    "configs/f2/e11_t_b2s_nominal_yoloxs.py",
+    "configs/f2/e13_t_b2s_nominal_yoloxs.py",
 ]
 
 
@@ -199,18 +199,18 @@ def test_e10_m3_teacher_builds():
     assert model.camera_backbone is not None
 
 
-# -- E11: 2x2 privilege/capacity attribution (M1 / M2 / D-self) --------------
+# -- E13: 2x2 privilege/capacity attribution (M1 / M2 / D-self) --------------
 
-E11_TEACHER_S = "configs/f2/e11_t_b2s_nominal_yoloxs.py"
-E11_M1 = "configs/f2/e11_m1_capacity_yoloxs.py"
-E11_M2 = "configs/f2/e11_m2_privilege_yoloxs.py"
-E11_DSELF = "configs/f2/e11_dself_yoloxs.py"
+E13_TEACHER_S = "configs/f2/e13_t_b2s_nominal_yoloxs.py"
+E13_M1 = "configs/f2/e13_m1_capacity_yoloxs.py"
+E13_M2 = "configs/f2/e13_m2_privilege_yoloxs.py"
+E13_DSELF = "configs/f2/e13_dself_yoloxs.py"
 
 
-def test_e11_teacher_s_is_nominal_jittered_and_small():
+def test_e13_teacher_s_is_nominal_jittered_and_small():
     """M2's teacher: the T-L recipe at S capacity (nominal D0, E09b sonar
     jitter, S geometry) -- differs from B3 only in the degradation probs."""
-    cfg = Config.fromfile(E11_TEACHER_S)
+    cfg = Config.fromfile(E13_TEACHER_S)
     assert cfg.model.sonar_neck.in_channels == [128, 256, 512]
     assert cfg.model.sonar_neck.out_channels == 128
     assert cfg.model.camera_backbone.deepen_factor == 0.33
@@ -218,25 +218,25 @@ def test_e11_teacher_s_is_nominal_jittered_and_small():
     assert _has_jitter(cfg)
 
 
-def test_e11_students_share_b3_recipe():
+def test_e13_students_share_b3_recipe():
     """All three 2x2 students = B3 exactly (same data/recipe/jitter), so
     only the teacher side varies across the 2x2."""
     probs = _deg_probs(Config.fromfile("configs/f2/e10_b3_degaug_yoloxs.py"))
-    for path in (E11_M1, E11_M2, E11_DSELF):
+    for path in (E13_M1, E13_M2, E13_DSELF):
         cfg = Config.fromfile(path)
         assert _deg_probs(cfg) == probs, path
         assert _has_jitter(cfg), path
 
 
-def test_e11_2x2_kd_matrix():
+def test_e13_2x2_kd_matrix():
     """The 2x2 cells differ only in teacher checkpoint + teacher_input;
     every other KD setting equals M3's (tau=2, obj+score, same routes,
     no reach, no feature KD)."""
     m3 = Config.fromfile(E10_M3).model.distillation
     want = {
-        E11_M1: ("degraded", "e10_t_b2_yoloxl_teacher_seed0"),
-        E11_M2: ("clear", "e11_t_b2s_nominal_yoloxs_seed0"),
-        E11_DSELF: ("degraded", "e10_b3_degaug_yoloxs_seed0"),
+        E13_M1: ("degraded", "e10_t_b2_yoloxl_teacher_seed0"),
+        E13_M2: ("clear", "e13_t_b2s_nominal_yoloxs_seed0"),
+        E13_DSELF: ("degraded", "e10_b3_degaug_yoloxs_seed0"),
     }
     for path, (t_in, ckpt_frag) in want.items():
         kd = Config.fromfile(path).model.distillation
@@ -251,24 +251,24 @@ def test_e11_2x2_kd_matrix():
         assert float(kd.get("feat_weight", 0.0)) == 0.0, path
 
 
-def test_e11_m1_inherits_m3_teacher_unchanged():
+def test_e13_m1_inherits_m3_teacher_unchanged():
     """M1 = M3 minus privilege: base is the M3 config, only
     teacher_input flips, so the embedded teacher must be identical."""
-    m1 = Config.fromfile(E11_M1).model.distillation
+    m1 = Config.fromfile(E13_M1).model.distillation
     m3 = Config.fromfile(E10_M3).model.distillation
     assert m1.teacher == m3.teacher
     assert m1.teacher_checkpoint == m3.teacher_checkpoint
 
 
-def test_e11_m2_and_dself_teacher_dicts_match_source_models():
+def test_e13_m2_and_dself_teacher_dicts_match_source_models():
     """The embedded teachers must equal their source configs' models
-    (guards copy drift): M2's == the E11 S teacher config, D-self's ==
+    (guards copy drift): M2's == the E13 S teacher config, D-self's ==
     B3's own model."""
     from mmengine.config import ConfigDict
 
     sources = {
-        E11_M2: Config.fromfile(E11_TEACHER_S).model,
-        E11_DSELF: Config.fromfile("configs/f2/e10_b3_degaug_yoloxs.py").model,
+        E13_M2: Config.fromfile(E13_TEACHER_S).model,
+        E13_DSELF: Config.fromfile("configs/f2/e10_b3_degaug_yoloxs.py").model,
     }
     for path, src in sources.items():
         kd = Config.fromfile(path).model.distillation.teacher
@@ -278,10 +278,10 @@ def test_e11_m2_and_dself_teacher_dicts_match_source_models():
             assert a[k] == b[k], (path, k)
 
 
-def test_e11_s_teacher_builds():
+def test_e13_s_teacher_builds():
     """The embedded S teacher model dict constructs standalone."""
     from mmdet.registry import MODELS
     init_default_scope("mmdet")
-    teacher = Config.fromfile(E11_M2).model.distillation.teacher
+    teacher = Config.fromfile(E13_M2).model.distillation.teacher
     model = MODELS.build(teacher)
     assert model.camera_backbone is not None

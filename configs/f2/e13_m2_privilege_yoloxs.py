@@ -1,13 +1,13 @@
-"""E11 M2 arm: privilege-only distillation -- a SAME-capacity (S)
+"""E13 M2 arm: privilege-only distillation -- a SAME-capacity (S)
 clear-view fusion teacher into the degradation-augmented student
 (F2 §2.2 M2, the privilege cell of the 2x2).
 
-Teacher = e11_t_b2s_nominal_yoloxs (the T-L recipe at S: nominal D0 +
+Teacher = e13_t_b2s_nominal_yoloxs (the T-L recipe at S: nominal D0 +
 sonar scale jitter), always queried on the clear camera
 (teacher_input='clear').  M2 - D-self isolates privilege at equal
 capacity; M3 - M2 isolates capacity at equal privilege (F2 §6.3).  KD
 settings equal M3's (tau=2, obj+score, same routes, no reach / feature
-KD).  The embedded teacher dict must equal e11_t_b2s_nominal_yoloxs's
+KD).  The embedded teacher dict must equal e13_t_b2s_nominal_yoloxs's
 model; tests/test_f2_configs.py asserts the two match.
 """
 
@@ -81,7 +81,7 @@ model = dict(
                 max_per_img=100,
             ),
         ),
-        teacher_checkpoint="work_dirs/e11_t_b2s_nominal_yoloxs_seed0/"
+        teacher_checkpoint="work_dirs/e13_t_b2s_nominal_yoloxs_seed0/"
                            "epoch_100.pth",
         teacher_input="clear",
         obj_weight=1.0,

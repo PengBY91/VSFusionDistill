@@ -1,13 +1,13 @@
-"""E11 M2 teacher: YOLOX-S two-stream fusion, nominal (D0) clear camera.
+"""E13 M2 teacher: YOLOX-S two-stream fusion, nominal (D0) clear camera.
 
 F2 §2.2 M2's "same-capacity fusion teacher that sees the clear view" --
 the T-L recipe (e10_t_b2_yoloxl_teacher) at student capacity: nominal D0
 training + the E09b sonar scale jitter, both streams COCO-pretrained
 YOLOX-S.  Differs from B3 (e10_b3_degaug_yoloxs) ONLY in the degradation
 probs (no D0-D4 augmentation), so at equal capacity the teacher-vs-B3
-contrast isolates clear-view training for the E11 2x2.
+contrast isolates clear-view training for the E13 2x2.
 
-Its checkpoint feeds e11_m2_privilege_yoloxs via
+Its checkpoint feeds e13_m2_privilege_yoloxs via
 ``distillation.teacher_checkpoint`` (no random teachers -- review
 2026-11-01 #1).  Keep this model in sync with the teacher block in that
 config; tests/test_f2_configs.py asserts the two model dicts match.  No
