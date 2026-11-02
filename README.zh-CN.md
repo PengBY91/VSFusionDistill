@@ -190,7 +190,7 @@ python tools/collect_results.py work_dirs --out results/results.csv
 - 数据：UXO sample 已转换为 `data/paired/uxo/`（2573 对；镜像盆修复后重标定为 blob 1319 / projected 1254），训练 GT 用 blob-only。全量 UXO 下载在途：data_processed.7z（57 GiB）已 md5 校验（11-02 05:32），两个 16 GB 导出包在途（`data/raw/uxo-full/download.log`）。
 - 实验：E01–E10 记录在 `doc/experiments.md`。E10 已按复盘降级为方向性读数；τ 消融 tau1 已出数、tau4 断点续训在跑（事故与恢复见 `doc/logs/2026-11-02-tau4-resume-weights-only.md`），出数只入账不解读。
 - 主线（2026-11-02 二次评估写定，复盘页 §0）：相机退化时，相机信息经融合或蒸馏进入声呐支路，收益多少、来自特权还是容量、代价（支路误差相关）多大。先证明有东西可传（融合活性、融合余量、互毒害），再做归因，再测相关性。
-- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，代码前置项全部落地（21f1345 + 6e2043a）。2026-11-02 二次评估给 E11 补了融合活性、融合余量、类别移植上界和 mAP@[.5:.95] 读数；分段训练与 val-ID 交错块是待确认的修订提议。数据到位后的管线：解压 → 2 条录音适配验证 → 转换 → 标定（指纹缓存可断点）→ 清点 → 冻结划分 → 数据闸门 0。train 侧 resume 的 scoped weights_only 修复已收口（train/test 共用 `aodet/torch_load_compat`，附 save-then-resume 冒烟测试，见事故记录）。
+- 下一步：E11（全量 UXO 类别均衡划分 + B0/B2/B3 三种子）已预登记，代码前置项全部落地（21f1345 + 6e2043a）。2026-11-02 二次评估给 E11 补了融合活性、融合余量、类别移植上界和 mAP@[.5:.95] 读数；分段训练（B0 ×3 → B2 ×3 → 条件触发的 B3 ×3）与 val-ID 交错时间块（`uxo_to_paired --val-id-mode interleaved`）已于当日采用，均在划分落盘前生效。数据到位后的管线：解压 → 2 条录音适配验证 → 转换 → 标定（指纹缓存可断点）→ 清点 → 冻结划分 → 数据闸门 0。train 侧 resume 的 scoped weights_only 修复已收口（train/test 共用 `aodet/torch_load_compat`，附 save-then-resume 冒烟测试，见事故记录）。
 - 二次评估的三条主要风险（复盘 §9.2）：现有交叉注意力融合是惰性的（E10 融合声呐头 d0–D∞ 逐档同值）；按 CMHD 同协议读数，E11 大概率落在天花板档；E12 的跨模态 logit 蒸馏在单目标数据上近似重复监督，须改用折外教师并加标签平滑对照。
-- 待决：E11 算力与是否分段、val-ID 方案（都须在划分落盘前定）；E11 落在天花板或地板档时论文定位，天花板档可能性最大，建议现在就定（复盘 §3.5、§9.2 b）；E11 计入 G0，E12 起超出选题 G0 授权，需用户和指导人确认（复盘 §0、§7）。
+- 待决：困难子集定义（须在 val 开封前写定）；E11 落在天花板或地板档时论文定位，天花板档可能性最大，建议现在就定（复盘 §3.5、§9.2 b）；E11 计入 G0，E12 起超出选题 G0 授权，需用户和指导人确认（复盘 §0、§7）。
 - RSFusionDet 仓库仍为空（每两周核验，`doc/logs/rsfusiondet-watch.log`）。

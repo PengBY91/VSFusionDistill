@@ -17,6 +17,8 @@ import pytest
 
 from aodet.datasets.converters.uxo_to_paired import (
     CATEGORIES,
+    VAL_ID_SEGMENTS,
+    _train_roles,
     convert,
 )
 from aodet.datasets.paired_format import read_paired
@@ -421,4 +423,124 @@ def test_e11_invocation_roundtrip_and_deterministic(tmp_path):
             max_frames_per_recording=30, val_id_tail_frac=0.15,
             val_id_gap_frac=0.05)
     assert (out / "camera.json").read_text() == c1
+    assert (out / "frame_meta.csv").read_text() == f1
+
+
+# --- interleaved val_id (2026-11-02 amendment, rethink §9.2 h) ---------
+
+def _blocks(roles, label):
+    """[(start, end)) runs of ``label`` in a role list."""
+    runs, start = [], None
+    for t, r in enumerate(roles + ["<end>"]):
+        if r == label and start is None:
+            start = t
+        elif r != label and start is not None:
+            runs.append((start, t))
+            start = None
+    return runs
+
+
+@pytest.mark.parametrize("n", [20, 37, 150, 600])
+@pytest.mark.parametrize("rec", ["2023-09-20_180722", "2024-01-01_000000",
+                                 "rec_x"])
+def test_interleaved_roles_shape(n, rec):
+    """Two val_id blocks, never at the tail-only position by
+    construction, total share = tail, at least one segment apart, every
+    train<->val_id boundary separated by exactly round(n*gap) unused
+    frames (or the recording edge), and >= half the frames train."""
+    roles = _train_roles(n, 0.15, 0.05, mode="interleaved", rec_key=rec)
+    blocks = _blocks(roles, "val_id")
+    assert len(blocks) == 2
+    b = max(1, int(round(n * 0.15 / 2)))
+    assert all(e - s == b for s, e in blocks)
+    seg = n / VAL_ID_SEGMENTS
+    # centred in non-adjacent segments
+    segs = [int((s + e) / 2 // seg) for s, e in blocks]
+    assert segs[1] - segs[0] >= 2
+    g = int(round(n * 0.05))
+    for s, e in blocks:
+        left = roles[max(0, s - g):s]
+        right = roles[e:min(n, e + g)]
+        assert all(r is None for r in left + right)
+        # no train frame touches a val_id frame
+        if s - g - 1 >= 0:
+            assert roles[s - 1] is None or g == 0
+        if e < n:
+            assert roles[e] is None or g == 0
+    for t in range(n - 1):
+        pair = {roles[t], roles[t + 1]}
+        assert pair != {"train", "val_id"}
+    assert roles.count("train") >= n / 2
+
+
+def test_interleaved_roles_deterministic_and_keyed():
+    """Same (seed, recording) -> same blocks across calls; the draw
+    depends on the recording name and on the seed, so recordings do not
+    all hold out the same segments."""
+    a = _train_roles(150, 0.15, 0.05, mode="interleaved", rec_key="r1")
+    assert a == _train_roles(150, 0.15, 0.05, mode="interleaved",
+                             rec_key="r1")
+    draws = {tuple(_blocks(_train_roles(150, 0.15, 0.05,
+                                        mode="interleaved",
+                                        rec_key=f"rec{i}"), "val_id"))
+             for i in range(30)}
+    assert len(draws) > 5
+    seeds = {tuple(_blocks(_train_roles(150, 0.15, 0.05,
+                                        mode="interleaved", rec_key="r1",
+                                        seed=s), "val_id"))
+             for s in range(30)}
+    assert len(seeds) > 5
+
+
+def test_interleaved_short_or_disabled_stays_train():
+    assert _train_roles(19, 0.15, 0.05, mode="interleaved",
+                        rec_key="r") == ["train"] * 19
+    assert _train_roles(150, 0.0, 0.05, mode="interleaved",
+                        rec_key="r") == ["train"] * 150
+    with pytest.raises(ValueError):
+        _train_roles(150, 0.15, 0.05, mode="bogus")
+
+
+def test_tail_mode_unchanged_by_amendment():
+    """The default path is the preregistered tail carve, bit for bit."""
+    assert _train_roles(20, 0.15, 0.05) == (["train"] * 16 + [None]
+                                            + ["val_id"] * 3)
+    assert _train_roles(20, 0.15, 0.05, mode="tail", rec_key="x",
+                        seed=7) == _train_roles(20, 0.15, 0.05)
+
+
+def test_e11_interleaved_invocation_roundtrip(tmp_path):
+    """E11 invocation after the amendment (manifest + cap 30 + 0.15 /
+    0.05 + interleaved, seed 0): report bookkeeping matches frame_meta,
+    val_id frames are not the trajectory tail, no val_id frame is
+    adjacent (in kept-frame order) to a train frame, and a rerun is
+    byte-identical."""
+    src = _make_fake_uxo(tmp_path / "src")
+    _make_fake_uxo_long(src, n_frames=40)
+    out = tmp_path / "paired"
+    manifest = {"seed": 0, "recordings": {
+        REC_A: {"split": "train", "moving_target": False},
+        REC_B: {"split": "val", "moving_target": False},
+        REC_C: {"split": "train", "moving_target": False}}}
+    kw = dict(split_manifest=manifest, max_frames_per_recording=30,
+              val_id_tail_frac=0.15, val_id_gap_frac=0.05,
+              val_id_mode="interleaved", val_id_seed=0)
+    report = convert(str(src), str(out), **kw)
+    data = read_paired(str(out))
+    c = report["recordings"][REC_C]
+    assert c["val_id_mode"] == "interleaved"
+    expect = _train_roles(30, 0.15, 0.05, mode="interleaved",
+                          rec_key=REC_C, seed=0)
+    assert c["val_id_frames"] == expect.count("val_id")
+    assert c["gap_unused"] == expect.count(None)
+    assert c["kept"] == 30 - expect.count(None)
+    c_rows = sorted((int(m["frame_idx"]), m["split"]) for m in
+                    data.frame_meta if m["recording"] == REC_C)
+    assert [s for _, s in c_rows] == [r for r in expect if r is not None]
+    assert len(_blocks(expect, "val_id")) == 2
+    # val_rows exist only on train recordings
+    assert {m["recording"] for m in data.frame_meta
+            if m["split"] == "val_id"} <= {REC_A, REC_C}
+    f1 = (out / "frame_meta.csv").read_text()
+    convert(str(src), str(out), **kw)
     assert (out / "frame_meta.csv").read_text() == f1
