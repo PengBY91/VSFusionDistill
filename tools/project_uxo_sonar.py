@@ -130,6 +130,39 @@ def save_calib_cache(cache_path: str, fingerprints: dict,
         json.dump(data, f, indent=2)
 
 
+def load_external_calibs(path: str) -> dict:
+    """Load calibrations from another run's v2 cache, keyed by RECORDING
+    NAME with the fingerprint deliberately ignored (E11 2026-11-03
+    basis decision: the split-filter verdicts certified calibrations
+    fitted on the capped frame set; reusing them for GT writing on the
+    trimmed set is the point, so the fingerprint -- which keys on the
+    frame set -- must not gate the lookup).  Fails loudly on a missing
+    file or a legacy v1 cache: a typo'd path must never silently fall
+    back to refitting."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or data.get("version") != 2:
+        raise ValueError(
+            f"{path}: not a v2 calib cache ( refusing to guess; v1 "
+            f"name-keyed caches are never trusted)")
+    out = {}
+    for rec, entry in data.get("recordings", {}).items():
+        if isinstance(entry, dict) and "calib" in entry:
+            out[rec] = entry["calib"]
+    return out
+
+
+def _resolve_calib(rec: str, external: dict, usable: dict):
+    """Per-recording calibration source.  Priority: external
+    (--calib-from, name-keyed) > local fingerprint cache hit > None
+    (caller fits).  Returns (calib_dict_or_None, state)."""
+    if rec in external:
+        return external[rec], "external"
+    if rec in usable:
+        return usable[rec], "hit"
+    return None, "miss"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--paired", default="data/paired/uxo")
@@ -150,6 +183,15 @@ def main():
                          "of each recording's frame order (first/last "
                          "this fraction dropped, same trim_window the "
                          "converter applies; E11 修订 2, 2026-11-02: 0.2)")
+    ap.add_argument("--calib-from", default=None,
+                    help="path to another run's v2 calib cache; entries "
+                         "are reused BY RECORDING NAME (fingerprint "
+                         "ignored) with priority over the local cache "
+                         "and over fitting.  E11 2026-11-03: the frozen "
+                         "filter certified calibrations fitted on the "
+                         "capped frame set, so final GT is written under "
+                         "those calibrations (user decision after "
+                         "doc/logs/2026-11-03-e11-final-gt-calib-drift.md)")
     args = ap.parse_args()
 
     from aodet.datasets.converters.uxo_projection import (
@@ -182,16 +224,27 @@ def main():
                   f"{', '.join(stale)} -> recomputing")
         print(f"calibrations from cache -> {cache_path} "
               f"({len(usable)}/{len(recs)} hit)")
+    external = {}
+    if args.calib_from:
+        external = load_external_calibs(args.calib_from)
+        matched = sum(1 for rec in recs if rec in external)
+        print(f"external calibrations -> {args.calib_from} "
+              f"({matched}/{len(recs)} matched by name)")
     calib_dicts = {}
 
     report, all_entries, obs_by_sample = {}, {}, {}
     for rec in sorted(recs):
         obs = recs[rec]
         anchor = None
-        if rec in usable:
-            cache_state = "hit"
-            calib_dicts[rec] = usable[rec]
-            calib = _calib_from_dict(usable[rec])
+        calib_d, state = _resolve_calib(rec, external, usable)
+        if calib_d is not None:
+            cache_state = state
+            calib_dicts[rec] = calib_d
+            calib = _calib_from_dict(calib_d)
+            if state == "external":
+                # persist under the CURRENT fingerprint so a plain
+                # --use-cache re-run reproduces this GT bit-for-bit
+                save_calib_cache(cache_path, fingerprints, calib_dicts)
         else:
             cache_state = "miss"
             calib = calibrate(rec, obs, min_frames=args.min_frames)

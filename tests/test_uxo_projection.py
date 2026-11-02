@@ -316,3 +316,45 @@ def test_calib_cache_roundtrip():
     back = tool._calib_from_dict(tool._calib_to_dict(calib))
     for o in obs[:10]:
         assert np.allclose(up.predict(calib, o), up.predict(back, o))
+
+
+def _load_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "project_uxo_sonar",
+        os.path.join(os.path.dirname(up.__file__), "..", "..", "..",
+                     "tools", "project_uxo_sonar.py"))
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
+
+
+def test_external_calib_loader_and_priority(tmp_path):
+    """--calib-from (E11 2026-11-03 basis decision): a v2 cache is loaded
+    BY RECORDING NAME with the fingerprint deliberately ignored (the
+    whole point is reusing calibrations fitted on a different frame
+    set); priority external > local hit > fit; legacy v1 refused."""
+    tool = _load_tool()
+    good = {"version": 2, "recordings": {
+        "recA": {"fingerprint": "wrong-on-purpose",
+                 "calib": {"P": [0, 0, 0]}},
+        "recB": {"fingerprint": "x", "calib": {"P": [1, 1, 1]}}}}
+    p = tmp_path / "ext.json"
+    p.write_text(json.dumps(good))
+    ext = tool.load_external_calibs(str(p))
+    # recA's fingerprint matches nothing on purpose -> still loaded
+    assert set(ext) == {"recA", "recB"}
+    assert ext["recA"] == {"P": [0, 0, 0]}
+    # external beats a local fingerprint-cache hit for the same recording
+    assert tool._resolve_calib("recA", ext, {"recA": {"P": [9, 9, 9]}}) == \
+        ({"P": [0, 0, 0]}, "external")
+    # recordings absent from the external cache keep the normal path
+    assert tool._resolve_calib("recC", ext, {"recC": {"P": [2, 2, 2]}}) == \
+        ({"P": [2, 2, 2]}, "hit")
+    assert tool._resolve_calib("recD", ext, {}) == (None, "miss")
+    # legacy v1 / malformed -> loud failure, never a silent refit
+    for bad in ({"version": 1, "recordings": {}}, {"recordings": {}}):
+        q = tmp_path / "bad.json"
+        q.write_text(json.dumps(bad))
+        with pytest.raises(ValueError):
+            tool.load_external_calibs(str(q))

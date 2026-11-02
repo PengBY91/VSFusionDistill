@@ -49,3 +49,15 @@
 - `configs/f2/e11_b0_sonar_only_yoloxs.py`（d542574）：304 epochs × 207 iters = 62,928 iters ≈ 3× E09b；test dataloader 默认 val；注册数字有测试守护（45 项配置测试绿）。
 - 发车链脚本 `/tmp/e11_b0_chain.sh`：每种子 train → eval（val / val_id 全档扫描 + train 自评 d0，逐调用显式 `--split`，逐 split 独立 out-dir）→ collect_results；.ok 断点续跑、重试两次停链、5 分钟心跳、断点续训 `resume=True`。
 - 实测速度 0.13–0.23 s/iter → 单 run 约 2–2.5 h，三种子连评约 8–9 h；GPU 空闲。
+
+## 7 裁定与执行（2026-11-03 05:40）
+
+用户裁定选项 2（换基重写 GT）。执行记录：
+
+- `tools/project_uxo_sonar.py` 新增 `--calib-from`：按录音名复用外部 v2 标定缓存（指纹故意忽略——复用在另一帧集上拟合的标定正是本选项的目的），优先级 external > 本地缓存命中 > 重拟合；复用条目同时写入本地缓存（按当前指纹），使普通 `--use-cache` 重跑逐位复现本版 GT；v1/畸形外部缓存响亮报错（拼错路径绝不静默回退重拟合）。回归测试 `test_external_calib_loader_and_priority`。
+- 重跑复核（无拟合，47/47 external，05:2x–05:3x 完成）：
+  - val/test 无 val-ID gap 帧、帧集与认证时一致：10 条 val 全窗 p50 与 split 时点逐条相等（最高 15.1px，零越门）；全体 26/47 精确相等。
+  - 21 条 train 录音差 −3.2 至 +7.5：交错 val-ID 的 gap 帧按冻结规则移出数据集（train 总帧 74–80 而非 90），p50 随帧集移动；160146（+7.5 → 26.7px）是已知整圈/phi_ref 卷绕形态的重尾残差被帧集变动放大，101131 +0.4 为舍入级。
+  - 终态：45/47 在 20px 门内，2 条 train 侧例外记录在案（160146 在行残差诊断备忘录已列为管线级后手）；val/test 干净，判据 2 主读数不再受 GT 偏置。
+- 漂移基（重拟合版）报告与标定缓存备份：`projection_report_refit_basis_backup.json`、`projection_calib_refit_basis_backup.json`（同目录）。
+- E11-1 B0×3 于 05:48 发车（链脚本 `/tmp/e11_b0_chain.sh`，watcher + 心跳在位；启动确认：epoch 5 三损失分量活跃下降，ETA 约 3.4 h/run，三种子连评预计 ~11 h）。
