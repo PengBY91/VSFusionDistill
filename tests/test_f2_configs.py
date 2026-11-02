@@ -42,6 +42,8 @@ F2_CONFIGS = [
     # E13 (the three distillation students are content-checked separately,
     # same reason as M3)
     "configs/f2/e13_t_b2s_nominal_yoloxs.py",
+    # E11 (B0; B2/B3 configs land with their staged segments)
+    "configs/f2/e11_b0_sonar_only_yoloxs.py",
 ]
 
 
@@ -113,6 +115,24 @@ def test_b2_trains_nominal_only():
     deg = [t for t in cfg.train_dataloader.dataset.pipeline
            if t["type"] == "AOSampleDegLevel"][0]
     assert deg["probs"]["d0"] == 1.0
+
+
+def test_e11_b0_registration_numbers():
+    """E11 pre-registration: only data + schedule length change vs E09b.
+    304 epochs x 207 iters (1650 train frames / batch 8) = 62,928 iters
+    = 2.996x E09b's 21,000; test dataloader defaults to val so test
+    stays sealed."""
+    cfg = Config.fromfile("configs/f2/e11_b0_sonar_only_yoloxs.py")
+    e09 = Config.fromfile("configs/f2/e09_s0_b0_jitter_yoloxs.py")
+    assert cfg.train_dataloader.dataset.data_root == "data/paired/uxo_full/"
+    assert cfg.train_dataloader.dataset.split == "train"
+    assert cfg.test_dataloader.dataset.split == "val"
+    assert cfg.train_cfg.max_epochs == 304
+    # recipe carried over untouched from E09b
+    assert cfg.optim_wrapper == e09.optim_wrapper
+    assert (cfg.train_dataloader.dataset.pipeline
+            == e09.train_dataloader.dataset.pipeline)
+    assert cfg.model == e09.model
 
 
 # -- E10: privileged distillation mainline ----------------------------------
