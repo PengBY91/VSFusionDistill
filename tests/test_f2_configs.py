@@ -42,8 +42,9 @@ F2_CONFIGS = [
     # E13 (the three distillation students are content-checked separately,
     # same reason as M3)
     "configs/f2/e13_t_b2s_nominal_yoloxs.py",
-    # E11 (B0; B2/B3 configs land with their staged segments)
+    # E11 (B0; B3 lands with its conditional segment)
     "configs/f2/e11_b0_sonar_only_yoloxs.py",
+    "configs/f2/e11_b2_cross_attn_nominal_yoloxs.py",
 ]
 
 
@@ -133,6 +134,22 @@ def test_e11_b0_registration_numbers():
     assert (cfg.train_dataloader.dataset.pipeline
             == e09.train_dataloader.dataset.pipeline)
     assert cfg.model == e09.model
+
+
+def test_e11_b2_registration_numbers():
+    """E11-2 mirrors e11_b0's delta on the B2 nominal source: same data
+    root, same 304-epoch schedule, test dataloader on val; the D0-only
+    training distribution is carried over untouched."""
+    cfg = Config.fromfile("configs/f2/e11_b2_cross_attn_nominal_yoloxs.py")
+    src = Config.fromfile("configs/f2/s0_b2_cross_attn_nominal_yoloxs.py")
+    b0 = Config.fromfile("configs/f2/e11_b0_sonar_only_yoloxs.py")
+    assert cfg.train_dataloader.dataset.data_root == "data/paired/uxo_full/"
+    assert cfg.test_dataloader.dataset.split == "val"
+    assert cfg.train_cfg.max_epochs == 304
+    assert cfg.param_scheduler == b0.param_scheduler
+    # D0-only training probs and the rest of the recipe unchanged
+    assert _deg_probs(cfg) == _deg_probs(src)
+    assert cfg.optim_wrapper == src.optim_wrapper
 
 
 # -- E10: privileged distillation mainline ----------------------------------
