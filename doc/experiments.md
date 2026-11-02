@@ -567,7 +567,7 @@ B 类，第 1、2 条已于 2026-11-02 由用户采用（划分落盘前，未�
 2. **val-ID 交错时间块（已采用）**：每条 train 录音的保留帧按时间切 10 段，由以（划分种子 0, 录音名）为键的确定性 RNG 抽 2 段、至少隔一段；每段中央放一个 round(n × 0.15 / 2) 帧的 val-ID 块，合计仍为 15%；每个块与训练帧相接的每一侧空出 round(n × 0.05) 帧不用（原预登记的 5% 间隔按"每个交界"沿用，不在交界间均摊，以免近邻帧泄漏抬高天花板）。保留帧少于 20，或切完后训练帧不足一半的录音整条留作 train，在转换报告中可见。实现：`uxo_to_paired._train_roles(mode="interleaved")`，CLI `--val-id-mode interleaved --val-id-seed 0`；原尾块模式保留为函数默认，旧调用逐位不变（测试 `test_tail_mode_unchanged_by_amendment`）。代价（封顶 150 帧时实测）：每条 train 录音训练帧 96–108（200 个录音名抽样均值 98.3），尾块方案为 120；val-ID 均为 22 帧。依据：弧线录音行程端部标定偏移最大（E03），尾块会把轨迹端点外推混进天花板读数。
 
    E11 转换命令因此固定为：`python -m aodet.datasets.converters.uxo_to_paired --src <full> --out <paired> --splits-json <manifest> --max-frames 150 --val-id-tail 0.15 --val-id-gap 0.05 --val-id-mode interleaved --val-id-seed 0`（划分清单 sha256 落盘后补记于本节）。
-3. 困难子集在 val 开封前预登记，只用录音清点属性（距离、回波对比度、几何、目标姿态）定义，不用模型输出。
+3. 困难子集在 val 开封前预登记，只用录音清点属性（距离、回波对比度、几何、目标姿态）定义，不用模型输出。草案已出（2026-11-02，`doc/e11-difficult-subset-draft-2026-11-02.md`）：四轴各一定义（距离 `dist_median_m` p67、回波 `blob_contrast_median` p33、几何 aim、姿态 `gt_aspect_median` p67）加复合 DS-hard，阈值在 split 落盘前于过滤后清单上冻结；为支撑距离/对比度/姿态轴，`tools/uxo_inventory.py` 同日新增三个只读字段（`dist_median_m`、`blob_contrast_median`、`gt_aspect_median`，测试同交）。待用户与指导人采用。
 
 C 类，工程项：新建 E11 配置之前，把属于 E13 的 `configs/f2/e11_{dself,m1_capacity,m2_privilege,t_b2s_nominal}_yoloxs.py` 及 `tests/test_f2_configs.py` 中的对应断言改名为 `e13_*`，避免与 `e11_b0/b2/b3_*` 的 `work_dirs` 混在一起。**已执行（2026-11-02）**：四个配置与断言（含 `teacher_checkpoint` 的 work_dir 路径、测试函数名）已改名 `e13_*`，配置测试通过。
 

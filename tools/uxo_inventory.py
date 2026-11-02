@@ -23,6 +23,7 @@ calibration itself stays in the projection tool.
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import sys
@@ -111,6 +112,7 @@ def inventory_recording(rec_dir: str, name: str) -> dict:
     # not an error
     classes = {}
     centers_u, centers_v = [], []
+    aspects = []
     for idx in sorted(labels):
         try:
             with open(os.path.join(rec_dir, "labels", idx + ".json"),
@@ -122,6 +124,9 @@ def inventory_recording(rec_dir: str, name: str) -> dict:
             classes.get(lab.get("class", "?"), 0) + 1
         centers_u.append((lab["x_min"] + lab["x_max"]) / 2 * 3)  # 640x360
         centers_v.append((lab["y_min"] + lab["y_max"]) / 2 * 3)  # -> 1920x1080
+        h = lab["y_max"] - lab["y_min"]
+        if h > 0:                                  # GT aspect: pose proxy
+            aspects.append((lab["x_max"] - lab["x_min"]) / h)
     entry["categories"] = classes
     entry["category"] = max(classes, key=classes.get) if classes else None
     entry["mixed_classes"] = len(classes) > 1
@@ -147,6 +152,7 @@ def inventory_recording(rec_dir: str, name: str) -> dict:
     import cv2
     n_blob = 0
     blob_rows = []
+    contrasts = []
     for idx in sorted(labels & aris):
         img = cv2.imread(os.path.join(rec_dir, "aris_raw", idx + ".pgm"),
                          cv2.IMREAD_UNCHANGED)
@@ -156,8 +162,17 @@ def inventory_recording(rec_dir: str, name: str) -> dict:
         if blobs:
             n_blob += 1
             blob_rows.append(blobs[0][1])   # row centre
+            med = float(np.median(img))     # echo contrast: peak/bg
+            if med > 0:
+                contrasts.append(float(blobs[0][0]) / med)
     entry["n_blob_frames"] = n_blob
     entry["blob_ratio"] = round(n_blob / max(len(labels & aris), 1), 3)
+    # E11 difficult-subset draft axes (rethink 9.2b): model-free,
+    # recording-level clearing attributes
+    entry["blob_contrast_median"] = (
+        round(float(np.median(contrasts)), 3) if contrasts else None)
+    entry["gt_aspect_median"] = (
+        round(float(np.median(aspects)), 3) if aspects else None)
     n_rows = 441
     try:
         import yaml
@@ -204,6 +219,27 @@ def merge_projection_report(inventory: dict, report: dict) -> int:
         e["proj_err_row_px_p50"] = (r.get("proj_err_row_px") or [None])[0]
         e["proj_err_col_beams_p50"] = (r.get("proj_err_col_beams")
                                        or [None])[0]
+        # sonar-target distance stats (E11 difficult-subset draft axis):
+        # per-frame |gantry head position - calibrated target P|; the
+        # head sweeps an arc, so min/median/max describe the run
+        P = r.get("P")
+        src_dir = e.get("src_dir")
+        if P and src_dir:
+            gantry = _read_csv_rows(os.path.join(
+                inventory["src"], src_dir, "gantry.csv"))
+            dists = []
+            for i in sorted(gantry):
+                g = gantry[i]
+                try:
+                    dists.append(math.dist(
+                        (float(g["x"]), float(g["y"]), float(g["z"])),
+                        (float(P[0]), float(P[1]), float(P[2]))))
+                except (KeyError, ValueError, TypeError, IndexError):
+                    continue
+            if dists:
+                e["dist_min_m"] = round(min(dists), 3)
+                e["dist_median_m"] = round(float(np.median(dists)), 3)
+                e["dist_max_m"] = round(max(dists), 3)
         n += 1
     return n
 
@@ -226,6 +262,7 @@ def main():
     for rec, rec_dir, group in recs:
         inventory["recordings"][rec] = inventory_recording(rec_dir, rec)
         e = inventory["recordings"][rec]
+        e["src_dir"] = os.path.relpath(rec_dir, args.src)
         apply_category_dir_audit(e, group)
         flag = ("" if e["category_dir_matches_labels"] in (None, True)
                 else "  LABEL/DIR-MISMATCH")

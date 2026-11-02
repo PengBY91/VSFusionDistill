@@ -102,6 +102,10 @@ def test_inventory_paths_categories_blobs_moving(tmp_path):
         assert e["n_blob_frames"] == N
         assert e["blob_ratio"] == 1.0
         assert not e["mixed_classes"]
+        # difficult-subset draft axes: blob peak/bg contrast (fixture:
+        # bg 30, blob peak ~235) and camera GT aspect (100x40 box)
+        assert 6.0 < e["blob_contrast_median"] < 9.0
+        assert e["gt_aspect_median"] == 2.5
     assert a["path"] == "arc"
     assert b["path"] == "line"
     # arc: camera centre static (sinusoid, no drift), sonar echo row
@@ -144,6 +148,29 @@ def test_merge_projection_report_adds_head_and_residuals(tmp_path):
     assert e["rms_az_deg"] == 0.8
     assert e["proj_err_row_px_p50"] == 1.5
     assert e["proj_err_col_beams_p50"] == 2.0
+
+
+def test_merge_report_adds_target_distance_stats(tmp_path):
+    """The distance axis of the E11 difficult-subset draft: per-frame
+    |gantry head - calibrated P| via src_dir + gantry.csv re-read."""
+    tool = _tool()
+    src = _make_src(tmp_path)
+    e = tool.inventory_recording(str(src / REC_ARC), REC_ARC)
+    inv = {"src": str(src), "recordings": {REC_ARC: e}}
+    e["src_dir"] = REC_ARC
+    # synthetic arc: centre (1.2, 1.4), radius 1.08, head z = -0.25
+    tool.merge_projection_report(inv, {REC_ARC: {
+        "yaw_sign": 1, "P": [1.2, 1.4, -0.25]}})
+    d = inv["recordings"][REC_ARC]
+    assert 1.0 < d["dist_min_m"] < 1.2
+    assert abs(d["dist_median_m"] - 1.08) < 0.05
+    assert 1.0 < d["dist_max_m"] < 1.2
+    # no P in the report -> no distance fields (old-report compatibility)
+    e2 = tool.inventory_recording(str(src / REC_LINE), REC_LINE)
+    inv2 = {"src": str(src), "recordings": {REC_LINE: e2}}
+    e2["src_dir"] = REC_LINE
+    tool.merge_projection_report(inv2, {REC_LINE: {"yaw_sign": 0}})
+    assert "dist_median_m" not in inv2["recordings"][REC_LINE]
 
 
 def test_merge_report_polar_head_keeps_path_geometry(tmp_path):
