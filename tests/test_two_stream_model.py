@@ -214,6 +214,45 @@ def test_b0_sonar_only():
     sum(v for k, v in losses.items() if "loss" in k).backward()
 
 
+def test_bcam_camera_only():
+    """E11 Bcam (B-class amendment 4): both sonar heads None -- the
+    sonar forward is skipped and only the camera branch appears in
+    loss and predict."""
+    sbb, snc, _ = _stream_cfg()
+    cbb, cnc, chd = _stream_cfg()
+    model = TwoStreamYOLOX(
+        sonar_backbone=sbb, sonar_neck=snc,
+        camera_backbone=cbb, camera_neck=cnc, camera_head=chd,
+        uncoupled_sonar_head=None, fused_sonar_head=None,
+        train_cfg=dict(assigner=dict(type="SimOTAAssigner",
+                                     center_radius=2.5)),
+        test_cfg=dict(score_thr=0.01,
+                      nms=dict(type="nms", iou_threshold=0.65)),
+        data_preprocessor=dict(type="PairedDataPreprocessor",
+                               mean=[0, 0, 0], std=[1, 1, 1],
+                               bgr_to_rgb=False, pad_size_divisor=32),
+    )
+    assert model.fused_sonar_head is None and \
+        model.uncoupled_sonar_head is None
+    calls = {"n": 0}
+    orig = model.extract_sonar_feat
+
+    def _spy(img):
+        calls["n"] += 1
+        return orig(img)
+
+    model.extract_sonar_feat = _spy
+    data = _batch(b=2)
+    inputs, samples = _prep(model, data, training=True)
+    losses = model.loss(inputs, samples)
+    assert losses and all(k.startswith("camera/") for k in losses)
+    sum(v for k, v in losses.items() if "loss" in k).backward()
+    inputs, samples = _prep(model, _batch(b=1), training=False)
+    out = model.predict(inputs, samples)
+    assert set(out) == {"camera"}
+    assert calls["n"] == 0
+
+
 def test_kd_path_with_frozen_teacher():
     sbb, snc, shd = _stream_cfg()
     teacher_cfg = dict(

@@ -9,7 +9,10 @@ Topology::
 * The **uncoupled sonar head** is served by pre-fusion sonar features only.
   It carries the "decoupled bookkeeping" of 张力 1 and the D∞ fallback, and
   is reported separately at evaluation time (F2 §2.3).
-* The **camera stream is optional** (``camera_backbone=None`` gives B0).
+* The **camera stream is optional** (``camera_backbone=None`` gives B0);
+  conversely both sonar heads may be None for the camera-only Bcam arm
+  (E11 B-class amendment 4) -- the sonar backbone stays built (paired
+  batches always carry sonar images) but its forward is skipped.
 * **No Mosaic/MixUp** — geometric augmentation is shared/synchronized at the
   dataset level (setup doc §4.4(2)); nothing here augments.
 * Distillation: an optional frozen teacher (bigger or same-capacity two-
@@ -197,7 +200,11 @@ class TwoStreamYOLOX(BaseDetector):
         son_imgs = batch_inputs["sonar"]
         cam_valid = batch_inputs.get("camera_valid")
 
-        son_feats = self.extract_sonar_feat(son_imgs)
+        # camera-only (Bcam): skip the dead sonar forward when no sonar
+        # head is configured (E11 B-class amendment 4)
+        son_feats = (self.extract_sonar_feat(son_imgs)
+                     if self.uncoupled_sonar_head is not None
+                     or self.fused_sonar_head is not None else None)
         cam_feats = (self.extract_camera_feat(cam_imgs)
                      if cam_imgs is not None else None)
 
@@ -295,7 +302,9 @@ class TwoStreamYOLOX(BaseDetector):
         cam_imgs = batch_inputs.get("camera")
         cam_valid = batch_inputs.get("camera_valid")
 
-        son_feats = self.extract_sonar_feat(son_imgs)
+        son_feats = (self.extract_sonar_feat(son_imgs)
+                     if self.uncoupled_sonar_head is not None
+                     or self.fused_sonar_head is not None else None)
         cam_feats = (self.extract_camera_feat(cam_imgs)
                      if cam_imgs is not None else None)
 

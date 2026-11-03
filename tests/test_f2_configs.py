@@ -42,9 +42,11 @@ F2_CONFIGS = [
     # E13 (the three distillation students are content-checked separately,
     # same reason as M3)
     "configs/f2/e13_t_b2s_nominal_yoloxs.py",
-    # E11 (B0; B3 lands with its conditional segment)
+    # E11 (B0; Bcam per B-class amendment 4; B3 gated on its segment)
     "configs/f2/e11_b0_sonar_only_yoloxs.py",
     "configs/f2/e11_b2_cross_attn_nominal_yoloxs.py",
+    "configs/f2/e11_bcam_camera_only_yoloxs.py",
+    "configs/f2/e11_b3_degaug_yoloxs.py",
 ]
 
 
@@ -91,10 +93,15 @@ def _sonar_weight(model_cfg):
 @pytest.mark.parametrize("path", F2_CONFIGS)
 def test_sonar_supervision_weight_matches_b0(path):
     """Review 2026-10-31 §1.3: the sonar-head weights that reach the sonar
-    backbone must sum to B0's single-head weight."""
+    backbone must sum to B0's single-head weight.  Bcam (E11 B-class
+    amendment 4) trains no sonar head at all -- the invariant is vacuous
+    there, not violated, so it is asserted as zero instead."""
+    m = Config.fromfile(path).model
+    if not (m.get("uncoupled_sonar_head") or m.get("fused_sonar_head")):
+        assert _sonar_weight(m) == 0.0
+        return
     b0 = Config.fromfile(F2_CONFIGS[0]).model
-    assert _sonar_weight(Config.fromfile(path).model) == \
-        pytest.approx(_sonar_weight(b0))
+    assert _sonar_weight(m) == pytest.approx(_sonar_weight(b0))
 
 
 def test_yolox_recipe():
@@ -148,6 +155,37 @@ def test_e11_b2_registration_numbers():
     assert cfg.train_cfg.max_epochs == 304
     assert cfg.param_scheduler == b0.param_scheduler
     # D0-only training probs and the rest of the recipe unchanged
+    assert _deg_probs(cfg) == _deg_probs(src)
+    assert cfg.optim_wrapper == src.optim_wrapper
+
+
+def test_e11_bcam_registration_numbers():
+    """E11 B-class amendment 4: Bcam is e11_b2 minus the sonar heads and
+    the fusion module -- data, pipeline, recipe and schedule identical
+    by inheritance; only the model topology changes."""
+    cfg = Config.fromfile("configs/f2/e11_bcam_camera_only_yoloxs.py")
+    b2 = Config.fromfile("configs/f2/e11_b2_cross_attn_nominal_yoloxs.py")
+    assert cfg.model.uncoupled_sonar_head is None
+    assert cfg.model.fused_sonar_head is None
+    assert cfg.model.camera_head is not None
+    assert cfg.model.fusion.type == "NoneFusion"
+    assert cfg.train_dataloader == b2.train_dataloader
+    assert cfg.train_cfg == b2.train_cfg
+    assert cfg.param_scheduler == b2.param_scheduler
+    assert cfg.test_dataloader == b2.test_dataloader
+
+
+def test_e11_b3_registration_numbers():
+    """E11-3 mirrors e11_b0's delta on the E10-B3 source: same data root,
+    same 304-epoch schedule, test dataloader on val; the D0-D4 p=0.2
+    training distribution is carried over untouched."""
+    cfg = Config.fromfile("configs/f2/e11_b3_degaug_yoloxs.py")
+    src = Config.fromfile("configs/f2/e10_b3_degaug_yoloxs.py")
+    b0 = Config.fromfile("configs/f2/e11_b0_sonar_only_yoloxs.py")
+    assert cfg.train_dataloader.dataset.data_root == "data/paired/uxo_full/"
+    assert cfg.test_dataloader.dataset.split == "val"
+    assert cfg.train_cfg.max_epochs == 304
+    assert cfg.param_scheduler == b0.param_scheduler
     assert _deg_probs(cfg) == _deg_probs(src)
     assert cfg.optim_wrapper == src.optim_wrapper
 
