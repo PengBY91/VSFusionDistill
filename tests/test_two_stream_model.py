@@ -578,3 +578,77 @@ def test_cross_plane_mil_cell_centre_columns():
         loss, n = crit([[(x1, 0.0, x2, 10.0)]], [torch.tensor([1.0])],
                        [obj], camera_img_w=320)
         assert n.item() == 1 and loss.item() < 0.01, col
+
+
+# -- E11-4 B2b: sonar query dropout on the fusion path -----------------------
+
+def _qdrop_pair(qdrop):
+    from aodet.models.fusion import CrossAttnFusion
+    torch.manual_seed(0)
+    plain = CrossAttnFusion([16, 16], [16, 16], embed_dim=16, num_heads=2,
+                            layer_scale_init=0.5)
+    torch.manual_seed(0)
+    other = CrossAttnFusion([16, 16], [16, 16], embed_dim=16, num_heads=2,
+                            layer_scale_init=0.5, sonar_query_dropout=qdrop)
+    other.load_state_dict(plain.state_dict())
+    son = [torch.randn(4, 16, 6, 5), torch.randn(4, 16, 3, 3)]
+    cam = [torch.randn(4, 16, 8, 7), torch.randn(4, 16, 4, 4)]
+    return plain, other, cam, son
+
+
+def test_qdrop_off_is_bit_identical_and_draws_no_rng():
+    plain, other, cam, son = _qdrop_pair(None)
+    plain.train(), other.train()
+    torch.manual_seed(1)
+    a = plain(cam, son)
+    torch.manual_seed(1)
+    b = other(cam, son)
+    after = torch.rand(1)
+    for x, y in zip(a, b):
+        assert torch.equal(x, y)
+    torch.manual_seed(1)
+    plain(cam, son)
+    assert torch.equal(torch.rand(1), after)   # no extra draws either way
+
+
+def test_qdrop_never_acts_in_eval():
+    plain, other, cam, son = _qdrop_pair(dict(p_sample=1.0, keep=0.5))
+    plain.eval(), other.eval()
+    for x, y in zip(plain(cam, son), other(cam, son)):
+        assert torch.equal(x, y)
+
+
+def test_qdrop_p_zero_is_identity_in_training():
+    plain, other, cam, son = _qdrop_pair(dict(p_sample=0.0, keep=0.5))
+    plain.train(), other.train()
+    for x, y in zip(plain(cam, son), other(cam, son)):
+        torch.testing.assert_close(x, y)
+
+
+def test_qdrop_masks_whole_channels_of_selected_samples_only():
+    _, f, _, son = _qdrop_pair(dict(p_sample=0.5, keep=0.5))
+    f.train()
+    torch.manual_seed(1)   # selects samples 1, 2 only
+    out = f(None, son)                      # D-inf path: fused = q exactly
+    qs = [proj(s) for proj, s in zip(f.sonar_proj, son)]
+    changed = [not torch.equal(out[0][i], qs[0][i]) for i in range(4)]
+    assert changed == [False, True, True, False]
+    for lvl in range(2):
+        for i in range(4):
+            if changed[i]:
+                o, q = out[lvl][i], qs[lvl][i]
+                kept = (o != 0).flatten(1).any(1)
+                # kept channels are q / keep, dropped channels are 0
+                torch.testing.assert_close(o[kept], q[kept] * 2.0)
+                assert torch.all(o[~kept] == 0)
+            else:
+                assert torch.equal(out[lvl][i], qs[lvl][i])
+
+
+@pytest.mark.parametrize("bad", [dict(p_sample=1.5, keep=0.5),
+                                 dict(p_sample=0.3, keep=0.0)])
+def test_qdrop_rejects_bad_args(bad):
+    from aodet.models.fusion import CrossAttnFusion
+    with pytest.raises(ValueError):
+        CrossAttnFusion([16], [16], embed_dim=16, num_heads=2,
+                        sonar_query_dropout=bad)

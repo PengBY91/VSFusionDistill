@@ -23,6 +23,14 @@ per feature level (review 2026-10-31 §2.1–§2.2):
   tested it on an un-normalised projection the head had never seen.
 * Camera features are **not** resampled to the sonar grid: the planes are
   unregistered and attention does not need equal sizes.
+* **Sonar query dropout** (E11-4 arm B2b, off by default): in training,
+  each sample is selected with probability ``p_sample`` and its projected
+  sonar features q get a per-channel Bernoulli(``keep``) mask scaled by
+  1/keep, on both the residual and the query.  It only reaches the fused
+  sonar head (the uncoupled head reads pre-fusion features), so the fused
+  head is pushed to recover from the camera.  Evaluation never drops.  Off
+  (``None``) is bit-identical to the plain module and draws no random
+  numbers.
 """
 
 import math
@@ -61,8 +69,17 @@ class CrossAttnFusion(nn.Module):
         dropout: float = 0.0,
         layer_scale_init: float = 0.0,
         pos_embed: bool = True,
+        sonar_query_dropout: Optional[dict] = None,
     ):
         super().__init__()
+        self.sq_drop = None
+        if sonar_query_dropout is not None:
+            p_s = float(sonar_query_dropout["p_sample"])
+            keep = float(sonar_query_dropout["keep"])
+            if not (0.0 <= p_s <= 1.0 and 0.0 < keep <= 1.0):
+                raise ValueError("sonar_query_dropout needs 0<=p_sample<=1 "
+                                 f"and 0<keep<=1, got {sonar_query_dropout}")
+            self.sq_drop = (p_s, keep)
         assert len(cam_channels) == len(sonar_channels)
         self.levels = len(cam_channels)
         self.pos_embed = pos_embed
@@ -90,6 +107,8 @@ class CrossAttnFusion(nn.Module):
         camera_valid: Optional[Tensor] = None,
     ) -> List[Tensor]:
         qs = [proj(sf) for proj, sf in zip(self.sonar_proj, son_feats)]
+        if self.sq_drop is not None and self.training:
+            qs = self._drop_sonar_queries(qs)
         if cam_feats is None:
             # D∞ drop: identical to the masked path (attention term = 0)
             return qs
@@ -110,4 +129,17 @@ class CrossAttnFusion(nn.Module):
             if camera_valid is not None:
                 att = att * camera_valid.to(att.dtype)[:, None, None]
             out.append((q_tok + att).transpose(1, 2).reshape(b, e, h, w))
+        return out
+
+    def _drop_sonar_queries(self, qs: List[Tensor]) -> List[Tensor]:
+        """Per-sample channel dropout on q (selection shared across
+        levels, channel masks drawn per level)."""
+        p_s, keep = self.sq_drop
+        b, e = qs[0].shape[:2]
+        dev, dt = qs[0].device, qs[0].dtype
+        sel = (torch.rand(b, device=dev) < p_s)[:, None, None, None]
+        out = []
+        for q in qs:
+            m = (torch.rand(b, e, 1, 1, device=dev) < keep).to(dt) / keep
+            out.append(torch.where(sel, q * m, q))
         return out

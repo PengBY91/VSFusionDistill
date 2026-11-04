@@ -149,7 +149,7 @@ Stage notes:
 | `aodet/geometry/` | M₀ camera→bearing mapping + flip mirroring (`m0.py`), ARIS beam table |
 | `configs/` | `_base_` (model/dataset/schedule/runtime) + `f2/` S0-lite configs (B0, cross-attn) |
 | `tools/` | `train.py`, `test.py` (per-branch D0–D∞ scan, per-split / per-recording / per-class output), `project_uxo_sonar.py` (calibration + projection, fingerprint-keyed cache), `uxo_inventory.py` / `split_uxo_recordings.py` (E11 recording inventory & frozen split), `anatomy.py` / `camera_anatomy.py` (per-recording, per-class dissection), `download_uxo_full.sh` (full-UXO download + md5), `check_gt_validity.py`, `make_degraded_testsets.py`, `run_seeds.sh`, `run_loocv.sh`, `collect_results.py`, `correlation_table.py`, third-party pinning, RSFusionDet watch |
-| `tests/` | 263 tests (collected 2026-11-04): degradation physics, format round-trip, geometry, metrics (incl. known-answer tests), model, UXO converter / projection / calibration cache, E11 tools (inventory / split / per-split eval), resume compatibility, end-to-end pipeline & tools |
+| `tests/` | 275 tests (collected 2026-11-04): degradation physics, format round-trip, geometry, metrics (incl. known-answer tests), model, UXO converter / projection / calibration cache, E11 tools (inventory / split / per-split eval), resume compatibility, end-to-end pipeline & tools |
 | `env/` | install scripts + `ENVIRONMENT.md` version record |
 | `doc/` | topic plan, 2026-11-01 review `f2-rethink-2026-11-01.md`, experiment ledger `experiments.md`, narrative logs `doc/logs/`, code reviews `doc/reviews/`, evidence archive `doc/evidence/` |
 | `data/paired/` | converted paired data (UXO: 2573 pairs + projection report & contact sheet) |
@@ -158,7 +158,7 @@ Stage notes:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # 263 tests collected (2026-11-04)
+python -m pytest tests/ -q          # 275 tests collected (2026-11-04)
 
 # S0-lite (UXO sample already converted to data/paired/uxo/)
 python tools/train.py configs/f2/s0_b0_sonar_only_yoloxs.py --seed 0

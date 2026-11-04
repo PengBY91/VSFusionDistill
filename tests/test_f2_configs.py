@@ -11,6 +11,7 @@ import os
 import sys
 
 import pytest
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -47,6 +48,9 @@ F2_CONFIGS = [
     "configs/f2/e11_b2_cross_attn_nominal_yoloxs.py",
     "configs/f2/e11_bcam_camera_only_yoloxs.py",
     "configs/f2/e11_b3_degaug_yoloxs.py",
+    # E11-4 fusion activation arms
+    "configs/f2/e11_b2a_gamma_fix_yoloxs.py",
+    "configs/f2/e11_b2b_sonar_qdrop_yoloxs.py",
 ]
 
 
@@ -189,6 +193,64 @@ def test_e11_b3_registration_numbers():
     assert _deg_probs(cfg) == _deg_probs(src)
     assert cfg.optim_wrapper == src.optim_wrapper
 
+
+def _gamma_and_conv_decay(cfg):
+    """Weight decay the built optimizer applies to the fusion gammas and
+    to an ordinary conv weight (read back from param_groups)."""
+    import copy
+    from mmdet.registry import MODELS
+    from mmengine.optim import build_optim_wrapper
+    init_default_scope("mmdet")
+    model = MODELS.build(cfg.model)
+    ow = build_optim_wrapper(model, copy.deepcopy(cfg.optim_wrapper))
+    decay = {}
+    for g in ow.optimizer.param_groups:
+        for prm in g["params"]:
+            decay[id(prm)] = g["weight_decay"]
+    gam = [decay[id(prm)] for prm in model.fusion.gamma]
+    conv = decay[id(model.fusion.cam_proj[0].weight)]
+    return model, gam, conv
+
+
+def test_e11_b2a_registration_numbers():
+    """E11-4 B2a = e11_b2 + gamma init 0.1 + gamma decay-free; nothing
+    else changes.  The decay exemption is checked on the built optimizer,
+    and the B2 baseline is shown to decay gamma (the defect being fixed)."""
+    cfg = Config.fromfile("configs/f2/e11_b2a_gamma_fix_yoloxs.py")
+    b2 = Config.fromfile("configs/f2/e11_b2_cross_attn_nominal_yoloxs.py")
+    assert cfg.train_dataloader == b2.train_dataloader
+    assert cfg.test_dataloader == b2.test_dataloader
+    assert cfg.train_cfg == b2.train_cfg
+    assert cfg.param_scheduler == b2.param_scheduler
+    assert cfg.optim_wrapper.optimizer == b2.optim_wrapper.optimizer
+    fa, fb = dict(cfg.model.fusion), dict(b2.model.fusion)
+    assert fa.pop("layer_scale_init") == 0.1
+    assert fb.pop("layer_scale_init") == 0.0
+    assert fa == fb
+    ma, mb = dict(cfg.model), dict(b2.model)
+    ma.pop("fusion"), mb.pop("fusion")
+    assert ma == mb
+    model, gam, conv = _gamma_and_conv_decay(cfg)
+    assert gam == [0.0] * 3 and conv == pytest.approx(5e-4)
+    assert all(torch.allclose(g, torch.full_like(g, 0.1))
+               for g in model.fusion.gamma)
+    _, gam_b2, _ = _gamma_and_conv_decay(b2)
+    assert gam_b2 == [pytest.approx(5e-4)] * 3
+
+
+def test_e11_b2b_registration_numbers():
+    """E11-4 B2b = B2a + sonar query dropout (p_sample 0.3, keep 0.5)."""
+    cfg = Config.fromfile("configs/f2/e11_b2b_sonar_qdrop_yoloxs.py")
+    b2a = Config.fromfile("configs/f2/e11_b2a_gamma_fix_yoloxs.py")
+    fb = dict(cfg.model.fusion)
+    assert fb.pop("sonar_query_dropout") == dict(p_sample=0.3, keep=0.5)
+    assert fb == dict(b2a.model.fusion)
+    assert cfg.optim_wrapper == b2a.optim_wrapper
+    assert cfg.train_dataloader == b2a.train_dataloader
+    assert cfg.train_cfg == b2a.train_cfg
+    model, gam, _ = _gamma_and_conv_decay(cfg)
+    assert gam == [0.0] * 3
+    assert model.fusion.sq_drop == (0.3, 0.5)
 
 # -- E10: privileged distillation mainline ----------------------------------
 
