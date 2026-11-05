@@ -14,7 +14,7 @@ Reads saved prediction files only (tools/test.py output), so sonar and
 camera may come from different runs (e.g. B0 sonar + Bcam or B2 camera):
 
     python tools/class_transplant.py \\
-        --sonar-pred work_dirs/<b0_run>/eval_val/pred.sonar.d0.json \\
+        --sonar-pred work_dirs/<b0_run>/eval_val/pred.sonar_uncoupled.d0.json \\
         --camera-pred work_dirs/<bcam_run>/eval_val/pred.camera.d0.json \\
         --paired data/paired/uxo_full --split val \\
         --out work_dirs/<b0_run>/transplant.<tag>.json
@@ -40,7 +40,7 @@ def _load(p):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--sonar-pred", required=True,
-                    help="sonar-branch COCO results (e.g. B0 pred.sonar.d0.json)")
+                    help="sonar-branch COCO results (e.g. B0 pred.sonar_uncoupled.d0.json; B2-type fused head: pred.sonar.d0.json)")
     ap.add_argument("--camera-pred", required=True,
                     help="camera-branch COCO results on the same split "
                          "(e.g. Bcam/B2 pred.camera.d0.json)")
