@@ -3,7 +3,8 @@ default_scope = "mmdet"
 # registers PairedSonarCameraDataset, AO* transforms, TwoStreamYOLOX,
 # PairedDataPreprocessor (aodet never edits site-packages)
 custom_imports = dict(
-    imports=["aodet.datasets", "aodet.models"], allow_failed_imports=False)
+    imports=["aodet.datasets", "aodet.models", "aodet.engine"],
+    allow_failed_imports=False)
 
 default_hooks = dict(
     timer=dict(type="IterTimerHook"),

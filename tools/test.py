@@ -27,7 +27,6 @@ import json
 import os
 import sys
 
-import numpy as np
 import torch
 from mmengine.config import Config, DictAction
 from mmengine.registry import init_default_scope
@@ -39,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import aodet.datasets  # noqa: E402,F401
 import aodet.models  # noqa: E402,F401
 from aodet.cuda_compat import install_nms_cpu_fallback  # noqa: E402
+from aodet.evaluation.coco_results import to_coco_results  # noqa: E402,F401
 from aodet.torch_load_compat import trusted_torch_load  # noqa: E402
 
 # branch name -> GT side (both sonar heads evaluate against sonar.json)
@@ -69,29 +69,6 @@ def recording_by_image_id(infos, side):
         if iid is not None and rec:
             out[int(iid)] = rec
     return out
-
-
-def to_coco_results(pred_samples, cat_id_map):
-    """DetDataSample list -> COCO result dicts (xywh, score)."""
-    results = []
-    for ds in pred_samples:
-        image_id = ds.metainfo.get("coco_image_id")
-        if image_id is None:
-            continue  # not matched to the GT json (shouldn't happen)
-        pred = ds.pred_instances
-        boxes = pred.bboxes.cpu().numpy() if torch.is_tensor(pred.bboxes) \
-            else np.asarray(pred.bboxes)
-        scores = pred.scores.cpu().numpy() if torch.is_tensor(pred.scores) \
-            else np.asarray(pred.scores)
-        labels = pred.labels.cpu().numpy() if torch.is_tensor(pred.labels) \
-            else np.asarray(pred.labels)
-        for (x1, y1, x2, y2), s, l in zip(boxes, scores, labels):
-            results.append(dict(
-                image_id=int(image_id),
-                category_id=cat_id_map[int(l)],
-                bbox=[float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-                score=float(s)))
-    return results
 
 
 def main():

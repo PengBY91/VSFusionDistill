@@ -147,7 +147,7 @@ flowchart TB
 | `aodet/geometry/` | M₀ 相机→方位映射 + 翻转镜像（`m0.py`）、ARIS 波束表 |
 | `configs/` | `_base_`（模型/数据/调度/运行时）+ `f2/` S0-lite 配置（B0、cross-attn） |
 | `tools/` | `train.py`、`test.py`（逐支路 D0–D∞ 扫描，支持按 split/逐录音/逐类输出）、`project_uxo_sonar.py`（标定+投影，指纹键控缓存）、`uxo_inventory.py` / `split_uxo_recordings.py`（E11 录音清点与冻结划分）、`anatomy.py` / `camera_anatomy.py`（逐录音逐类解剖）、`download_uxo_full.sh`（全量 UXO 下载+md5 校验）、`check_gt_validity.py`、`make_degraded_testsets.py`、`run_seeds.sh`、`run_loocv.sh`、`collect_results.py`、`correlation_table.py`、第三方 pin、RSFusionDet 监视 |
-| `tests/` | 275 项测试（2026-11-04 收集数）：退化物理、格式往返、几何、指标（含已知答案测试）、模型、UXO 转换器/投影/标定缓存、E11 工具（清点/划分/逐 split 评测）、断点续训兼容、端到端管线与工具 |
+| `tests/` | 282 项测试（2026-11-04 收集数）：退化物理、格式往返、几何、指标（含已知答案测试）、模型、UXO 转换器/投影/标定缓存、E11 工具（清点/划分/逐 split 评测）、断点续训兼容、端到端管线与工具 |
 | `env/` | 安装脚本 + `ENVIRONMENT.md` 版本记录 |
 | `doc/` | 选题方案、复盘 `f2-rethink-2026-11-01.md`、实验台账 `experiments.md`、过程日志 `doc/logs/`、代码审查 `doc/reviews/`、证据存档 `doc/evidence/` |
 | `data/paired/` | 转换后的配对数据（UXO：2573 对 + 投影报告与拼图） |
@@ -156,7 +156,7 @@ flowchart TB
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/ -q          # 275 tests collected (2026-11-04)
+python -m pytest tests/ -q          # 282 tests collected (2026-11-04)
 
 # S0-lite（UXO sample 已转换至 data/paired/uxo/）
 python tools/train.py configs/f2/s0_b0_sonar_only_yoloxs.py --seed 0

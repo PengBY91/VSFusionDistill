@@ -3,6 +3,12 @@
 
 Adds aodet to custom_imports automatically and stamps every run directory
 with config, git hash, seed and environment summary (setup doc §4.4(7)).
+
+``--val-interval N`` (default 0 = off) appends aodet.engine.PeriodicValHook:
+every N epochs, val losses + per-branch AP50 / mAP / class-agnostic AP50 /
+top-1 class accuracy on the val split at d0, written to
+``<work_dir>/val_curve.jsonl``.  It never reads test and restores all RNG
+states, so the training stream is the same with or without it.
 """
 
 import argparse
@@ -33,6 +39,12 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--cfg-options", nargs="+", action=DictAction, default=None)
+    parser.add_argument(
+        "--val-interval", type=int, default=0,
+        help="evaluate on val every N epochs (0 = off); see module doc")
+    parser.add_argument(
+        "--val-split", default="val",
+        help="frame_meta split for --val-interval (test is refused)")
     args = parser.parse_args()
 
     # make aodet importable before Config.fromfile — mmengine resolves
@@ -42,6 +54,7 @@ def main():
         os.path.abspath(__file__))))
 
     from aodet.torch_load_compat import trusted_torch_load
+    import aodet.engine  # noqa: F401  (registers PeriodicValHook)
 
     cfg = Config.fromfile(args.config)
     init_default_scope(cfg.get("default_scope", "mmdet"))
@@ -53,6 +66,11 @@ def main():
     cfg.randomness = dict(seed=args.seed, deterministic=False)
     if args.cfg_options:
         cfg.merge_from_dict(args.cfg_options)
+    if args.val_interval:
+        hooks = list(cfg.get("custom_hooks", []) or [])
+        hooks.append(dict(type="PeriodicValHook", interval=args.val_interval,
+                          split=args.val_split))
+        cfg.custom_hooks = hooks
 
     runner = Runner.from_cfg(cfg)
     os.makedirs(runner.work_dir, exist_ok=True)

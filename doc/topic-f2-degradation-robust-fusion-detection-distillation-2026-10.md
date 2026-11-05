@@ -492,12 +492,12 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 - [ ] **B2 链停在 2 种子**（台账 E11 节"单种子协议"）。先看链进度：`tail -n 20 work_dirs/e11_b2_chain.log; ls work_dirs/e11_b2_cross_attn_nominal_yoloxs_seed*/`。不要改正在运行的 `/tmp/e11_b2_chain.sh`（bash 边读边执行，改文件会让在跑的链读到错位内容）。等 seed 1 的 val 评测落盘后、seed 2 训练开始前停链：`pkill -f e11_b2_chain.sh`，再用 `pgrep -af "train.py.*e11_b2_cross_attn"` 确认没有 seed 2 训练进程（有则 kill），在链日志里补一行停链原因。
 - [ ] **B2a 冒烟**（1 epoch，含 val 评测与 γ 读数）：
   ```
-  python tools/train.py configs/f2/e11_b2a_gamma_fix_yoloxs.py --work-dir work_dirs/e11_b2a_smoke --seed 0 --cfg-options train_cfg.max_epochs=1
+  python tools/train.py configs/f2/e11_b2a_gamma_fix_yoloxs.py --work-dir work_dirs/e11_b2a_smoke --seed 0 --cfg-options train_cfg.max_epochs=1 --val-interval 1
   ckpt=$(cat work_dirs/e11_b2a_smoke/last_checkpoint); [ -f "$ckpt" ] || ckpt=work_dirs/e11_b2a_smoke/$ckpt
   python tools/test.py configs/f2/e11_b2a_gamma_fix_yoloxs.py "$ckpt" --out-dir work_dirs/e11_b2a_smoke/eval_val --levels d0 dinf --split val
   python tools/fusion_gamma.py work_dirs/e11_b2a_smoke
   ```
-  通过标准：训练日志里 camera / fused_sonar / uncoupled_sonar 三组 loss 共 9 项、全部有限；`eval_val/` 下 camera、sonar、sonar_uncoupled 三支路的 d0 与 dinf 预测文件都在；三层 mean |γ| 仍在 0.1 附近（没有被衰减拉回 0）。
+  通过标准：训练日志里 camera / fused_sonar / uncoupled_sonar 三组 loss 共 9 项、全部有限；`eval_val/` 下 camera、sonar、sonar_uncoupled 三支路的 d0 与 dinf 预测文件都在；三层 mean |γ| 仍在 0.1 附近（没有被衰减拉回 0）；`work_dirs/e11_b2a_smoke/val_curve.jsonl` 有 epoch 1 一行，三支路的 AP50、类无关 AP50、top1 与 val loss 都在，`weights` 为 `ema`，记下 `seconds`（单次 val 耗时，乘以 304/5 ≈ 61 次即整条 run 的额外开销）。
 - [ ] **B2b 冒烟**：同上，配置换 `configs/f2/e11_b2b_sonar_qdrop_yoloxs.py`，work-dir 换 `work_dirs/e11_b2b_smoke`。通过标准同 B2a。另记 s/iter，与 B2a 比较，查声呐查询丢弃有没有带来额外耗时。
 - [ ] **B2 融合活性读数**（E11-4 触发判定；B2 seed 0/1 评测落盘后）：
   ```
@@ -514,12 +514,12 @@ F 详案 §3 步骤 5 "推理分别测试声呐单独输入及声光共同输入
 - [ ] **E11-4 发车**（仅在融合惰性时，且两臂冒烟都已通过）。两臂同卡并跑，种子 0；链脚本以 `/tmp/e11_b2_chain.sh` 为模板（`.ok`、心跳、重试两次停链），每臂的步骤：
   ```
   cfg=configs/f2/e11_b2a_gamma_fix_yoloxs.py; work=work_dirs/e11_b2a_gamma_fix_yoloxs_seed0   # B2b: e11_b2b_sonar_qdrop_yoloxs
-  python tools/train.py $cfg --work-dir $work --seed 0
+  python tools/train.py $cfg --work-dir $work --seed 0 --val-interval 5
   ckpt=$(cat $work/last_checkpoint); [ -f "$ckpt" ] || ckpt=$work/$ckpt
   python tools/test.py $cfg "$ckpt" --out-dir $work/eval_val --levels d0 d1 d2 d3 d4 dinf --split val
   python tools/test.py $cfg "$ckpt" --out-dir $work/eval_val_id --levels d0 --split val_id
   python tools/test.py $cfg "$ckpt" --out-dir $work/eval_train --levels d0 --split train
   python tools/fusion_gamma.py $work
   ```
-  发车后十分钟内人工确认一次（s/iter、9 项 loss、显存），把实测 ETA 写进台账。
+  发车后十分钟内人工确认一次（s/iter、9 项 loss、显存），把实测 ETA 写进台账。训练中途看曲线：`tail -n 3 $work/val_curve.jsonl`（每 5 epoch 一行，val@d0，只作学习曲线，判定仍读终点 checkpoint 的 tools/test.py）。
 - [ ] **出数 24 h 内入账**：按台账 E11-4 节判据 1–7 逐条过账（阈值 0.063，读数落在阈值 ±0.02 带内的报用户），同步台账 §0、问答板 Q6 和 CLAUDE.md 主线卡点；融合活跃且 Δ_fuse(d0) > 0.063 的那条臂，作为 E12/E13 学生侧的融合基线写进 E12 预登记。
