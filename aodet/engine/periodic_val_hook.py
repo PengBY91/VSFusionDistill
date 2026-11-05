@@ -117,7 +117,12 @@ class PeriodicValHook(Hook):
     def _build(self, runner) -> None:
         from mmengine.runner import Runner
 
+        from aodet.cuda_compat import install_nms_cpu_fallback
         from aodet.evaluation.per_branch_metric import filter_gt_sources
+        # model.predict below reaches the compiled mmcv NMS; the GPU env
+        # builds mmcv CPU-only (see aodet/cuda_compat), so install the
+        # same CPU fallback tools/test.py installs at startup.
+        install_nms_cpu_fallback()
         dl = copy.deepcopy(runner.cfg.test_dataloader)
         dl.batch_size = self.batch_size
         dl.num_workers = self.num_workers
